@@ -64,6 +64,14 @@ stops it and restores the previous startup entry and helper files.
 
 ## Local data and customization
 
+Voice is provided by a separately installed application.
+Its engine and speech models are not bundled in Abide. From an installed voice
+checkout, run `.venv/bin/python scripts/install_abide.py --autostart` to add local
+launchers and enable the listener at Xfce login. Hold Super+V to talk, use
+Super+Alt+V for Voice control, and Super+Ctrl+V for Voice diagnostics. Diagnostics
+remain available when the engine cannot start. The integration preserves other
+launchers and keeps installation-specific commands out of this repository.
+
 Journal files stay in `~/.local/share/abide/journal/YYYY-MM-DD.txt`. The directory
 uses mode 0700 and entries use mode 0600. Saving writes a temporary file, flushes
 it, and replaces the entry atomically. Nothing uploads entries or connects to a
