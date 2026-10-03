@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+.ruff_cache/
+.pytest_cache/
+.state/
+backups/
+journal/
+launchers.json
+*.backup
+*.log
+previews/

@@ -1,0 +1,32 @@
+.abide-guide { background-color: #151514; color: #d8d8d2; }
+.abide-guide .abide-heading {
+  font-family: "DejaVu Sans Mono";
+  font-size: 21pt;
+  letter-spacing: 3px;
+  color: #e0ded1;
+}
+.abide-guide .abide-muted { color: #aaa99f; }
+.abide-guide .abide-section {
+  font-family: "DejaVu Sans Mono";
+  font-size: 9pt;
+  letter-spacing: 2px;
+  color: #bcb69a;
+}
+.abide-guide .abide-search { min-height: 30px; padding: 7px 12px; }
+.abide-guide list { background-color: #181817; }
+.abide-guide .abide-shortcut-row {
+  min-height: 30px;
+  border-bottom: 1px solid #30302b;
+}
+.abide-guide .abide-shortcut-row:nth-child(even) { background-color: #1d1d1a; }
+.abide-guide .abide-key {
+  font-family: "DejaVu Sans Mono";
+  font-size: 10pt;
+  color: #e0ded1;
+  background-color: #262620;
+  border: 1px solid #424239;
+  border-radius: 4px;
+  padding: 7px 12px;
+}
+.abide-guide .abide-scripture { font-size: 12pt; color: #e0ded1; }
+.abide-guide textview, .abide-guide textview text { background-color: #10100f; color: #d8d8d2; }
