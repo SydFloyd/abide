@@ -20,17 +20,27 @@ action. Search accepts action names, key names, and aliases such as Windows or
 Enter. Opening a terminal from the menu explicitly focuses its new window,
 including when Xfce Terminal reuses an existing server.
 
+A small background helper also focuses newly opened application windows across
+the desktop. This covers existing shortcuts, including custom terminal commands,
+without changing their commands. Reused application servers sometimes supply an
+old focus timestamp; the helper requests focus with the current X server time.
+It activates each new window once, so switching away afterwards keeps your focus.
+It leaves existing windows alone when starting and ignores desktop panels,
+menus, splash screens, notifications, minimized windows, and other workspaces.
+New background application windows can interrupt typing with this policy.
+
 ## Install
 
 Requires Python 3, GTK 3 / PyGObject, libwnck 3, Xfce, and an X11 session. On Debian:
 
 ```sh
-sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-wnck-3.0 xfconf exo-utils xfce4-terminal
+sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-wnck-3.0 libglib2.0-bin xfconf exo-utils xfce4-terminal
 python3 install.py
 ```
 
 The installer writes under `~/.local`, adds application entries for the three
-panels, and updates only the listed keyboard bindings. Super+Space replaces
+panels, adds the focus helper to Xfce login startup, and updates only the listed
+keyboard bindings. Super+Space replaces
 Xfce's app finder shortcut; app finder remains available from the menu and
 Alt+F3. The old Super+/ and Super+T bindings are removed. The old standalone
 Super listener, if installed, is stopped and removed from login startup.
@@ -47,6 +57,10 @@ To restore the files and keyboard bindings from the latest installation:
 
 Backups stay in `~/.local/state/abide/panel-installs`. Undo retains journal entries
 and any local launcher configuration.
+
+The focus helper starts immediately on installation and at future Xfce logins.
+Run `~/.local/bin/abide-focus --stop` to stop it for the current session. Undo also
+stops it and restores the previous startup entry and helper files.
 
 ## Local data and customization
 

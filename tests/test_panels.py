@@ -47,6 +47,42 @@ class InstallationTests(unittest.TestCase):
             self.assertFalse(any("journal" in path.parts for path in files))
             self.assertFalse(any(secret.encode() in contents for contents in files.values()))
             self.assertEqual((data / "journal/2026-01-01.txt").read_text(), secret)
+            self.assertIn(home / ".local/bin/abide-focus", files)
+            self.assertIn(home / ".config/autostart/abide-focus.desktop", files)
+
+    def test_undo_stops_focus_and_preserves_previous_service_state(self):
+        installer = module("abide_undo_install", "install.py")
+        snapshot = {"shortcuts": {}, "files": {}, "focus_listener": False}
+        with patch.object(installer, "stop_focus") as stop, patch.object(installer, "start_focus") as start, \
+                patch.object(installer.Path, "exists", return_value=True):
+            installer.restore(Path("unused-backup"), snapshot)
+            stop.assert_called_once()
+            start.assert_not_called()
+            snapshot["focus_listener"] = True
+            installer.restore(Path("unused-backup"), snapshot)
+            start.assert_called_once()
+
+    def test_failed_focus_start_restores_installation(self):
+        installer = module("abide_rollback_install", "install.py")
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            state = home / ".local/state/abide"
+            target = home / ".local/share/abide/focus.py"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"PREVIOUS_SOURCE")
+            with patch.object(installer, "HOME", home), patch.object(installer, "STATE", state), \
+                    patch.object(installer, "BIN", home / ".local/bin"), \
+                    patch.object(installer, "LEGACY_AUTOSTART", home / ".config/autostart/legacy.desktop"), \
+                    patch.object(installer, "targets", return_value={target: b"NEW_SOURCE"}), \
+                    patch.object(installer, "xfconf", return_value=None), \
+                    patch.object(installer, "focus_running", return_value=False), \
+                    patch.object(installer, "stop_focus"), \
+                    patch.object(installer, "start_focus", side_effect=RuntimeError("Service unavailable")), \
+                    patch.object(sys, "argv", ["install.py"]):
+                with self.assertRaisesRegex(RuntimeError, "Service unavailable"):
+                    installer.main()
+            self.assertEqual(target.read_bytes(), b"PREVIOUS_SOURCE")
+            self.assertFalse((state / "latest-panels-install").exists())
 
 
 @unittest.skipUnless(os.environ.get("ABIDE_GUI_TEST") == "1", "Set ABIDE_GUI_TEST=1 for desktop checks")
