@@ -139,6 +139,7 @@ class PanelTests(unittest.TestCase):
     MODES = {
         "test_search_action_key_alias_and_empty_results": "shortcuts",
         "test_shortcuts_layout_and_keyboard_search": "shortcuts",
+        "test_shortcuts_refresh_when_optional_software_changes": "shortcuts",
         "test_journal_focus_loss_saves_before_closing": "journal",
         "test_failed_save_protects_journal": "journal",
         "test_date_popup_retains_journal": "journal",
@@ -253,6 +254,7 @@ class PanelTests(unittest.TestCase):
         self.menu_key(self.ui.Gdk.KEY_Return)
         self.assertEqual(self.app.menu_route, "Settings")
         self.assertEqual(self.app.menu_list.get_row_at_index(0).get_tooltip_text(), "Back")
+
         self.menu_key(self.ui.Gdk.KEY_Escape)
         self.assertEqual(self.app.menu_route, "Abide")
         self.assertEqual(self.app.menu_list.get_selected_row().get_tooltip_text(), "Settings")
@@ -274,18 +276,47 @@ class PanelTests(unittest.TestCase):
         self.pump(0.05)
         self.assertEqual(self.app.get_windows(), [])
 
+    def test_menu_hides_missing_capture_and_webapp_actions(self):
+        original = self.ui.command_available
+        def available(command):
+            return Path(command[0]).name not in ("xfce4-screenshooter", "simplescreenrecorder", "abide-webapp") and original(command)
+        with patch.object(self.ui, "command_available", side_effect=available):
+            self.app.refresh_menu()
+            self.assertNotIn("Capture", [row.get_tooltip_text() for row in self.app.menu_list.get_children()])
+            self.app.menu_search.set_text("Gmail")
+            self.assertEqual(self.app.menu_list.get_children(), [])
+        with patch.object(self.ui, "command_available", return_value=True):
+            self.app.refresh_menu()
+            self.assertEqual([row.get_tooltip_text() for row in self.app.menu_list.get_children()], ["Gmail"])
+
+    def test_shortcuts_refresh_when_optional_software_changes(self):
+        import bindings
+        original = bindings.command_available
+        window = self.window
+        with patch.object(bindings, "command_available", side_effect=lambda command:
+                          Path(command[0]).name != "abide-webapp" and original(command)):
+            self.app.reload_shortcuts()
+            self.assertNotIn("X", [title for title, _key in self.app.shortcut_items])
+        with patch.object(bindings, "command_available", side_effect=lambda command:
+                          Path(command[0]).name == "abide-webapp" or original(command)):
+            self.app.reload_shortcuts()
+            self.assertIn("X", [title for title, _key in self.app.shortcut_items])
+            self.assertIn("Gmail", [title for title, _key in self.app.shortcut_items])
+        self.assertIs(self.app.cached_window, window)
+
     def test_search_finds_webapps_without_adding_home_menu_buttons(self):
         titles = [row.get_tooltip_text() for row in self.app.menu_list.get_children()]
         self.assertNotIn("X", titles)
         self.assertNotIn("Gmail", titles)
-        for app in self.ui.WEB_APPS:
-            with self.subTest(app=app.identifier):
-                self.app.menu_search.set_text(app.name)
-                first = self.app.menu_list.get_row_at_index(0)
-                self.assertEqual(first.get_tooltip_text(), app.name)
-                with patch.object(self.app, "launch") as launch:
-                    self.menu_key(self.ui.Gdk.KEY_Return)
-                    launch.assert_called_once_with(first, app.command(Path.home() / ".local/bin"))
+        with patch.object(self.ui, "command_available", return_value=True):
+            for app in self.ui.WEB_APPS:
+                with self.subTest(app=app.identifier):
+                    self.app.menu_search.set_text(app.name)
+                    first = self.app.menu_list.get_row_at_index(0)
+                    self.assertEqual(first.get_tooltip_text(), app.name)
+                    with patch.object(self.app, "launch") as launch:
+                        self.menu_key(self.ui.Gdk.KEY_Return)
+                        launch.assert_called_once_with(first, app.command(Path.home() / ".local/bin"))
 
     def test_menu_sizes_to_visible_actions(self):
         main = self.window.get_size()
@@ -309,6 +340,46 @@ class PanelTests(unittest.TestCase):
         self.assertEqual([row.get_tooltip_text() for row in self.app.menu_list.get_children()], ["Record screen"])
         self.assertLess(self.window.get_size().height, main.height)
 
+    def test_update_row_and_dot_follow_cached_status_without_network(self):
+        from updater import Updater
+        root = self.ui.ROOT
+        (root / "release.json").write_text('{"format":1,"revision":"menu-test"}')
+        checker = Updater(root, self.ui.STATE)
+        status = self.ui.STATE / "update-status.json"
+        saved = status.read_bytes() if status.exists() else None
+        def restore():
+            if saved is None:
+                status.unlink(missing_ok=True)
+            else:
+                status.write_bytes(saved)
+        self.addCleanup(restore)
+        self.assertNotIn("Update", [row.get_tooltip_text() for row in self.app.menu_list.get_children()])
+        selected = next(row for row in self.app.menu_list.get_children() if row.get_tooltip_text() == "Journal")
+        self.app.menu_list.select_row(selected)
+        checker.save_status({"state": "available", "version": "0.2.0", "revision": "a" * 40})
+        self.pump(0.2)
+        row = next(row for row in self.app.menu_list.get_children() if row.get_tooltip_text() == "Update")
+        self.assertEqual(self.app.menu_list.get_selected_row().get_tooltip_text(), "Journal")
+        dot = next(child for child in row.get_child().get_children()
+                   if child.get_style_context().has_class("abide-update-dot"))
+        self.assertEqual(dot.get_text(), "●")
+        self.app.menu_search.set_text("update")
+        self.assertEqual(self.app.menu_list.get_row_at_index(0).get_tooltip_text(), "Update")
+        with patch.object(self.app, "launch") as launch:
+            self.menu_key(self.ui.Gdk.KEY_Return)
+            launch.assert_called_once()
+            self.assertEqual(launch.call_args.args[1][-1], "--gui")
+        checker.save_status({"state": "current"})
+        self.pump(0.2)
+        self.assertNotIn("Update", [row.get_tooltip_text() for row in self.app.menu_list.get_children()])
+
+    def test_addin_manager_is_in_the_menu_and_software_search(self):
+        self.assertIn("Add-ins", [row.get_tooltip_text() for row in self.app.menu_list.get_children()])
+        self.app.menu_search.set_text("software")
+        row = self.app.menu_list.get_row_at_index(0)
+        self.assertEqual(row.get_tooltip_text(), "Add-ins")
+        self.assertTrue(row.action[0].endswith("abide-addins"))
+
     def search(self, text):
         self.app.shortcut_search.set_text(text)
         self.pump(0.05)
@@ -316,6 +387,8 @@ class PanelTests(unittest.TestCase):
                 for row in self.app.shortcut_list.get_children() if row.get_child_visible()]
 
     def test_search_action_key_alias_and_empty_results(self):
+        with patch("bindings.command_available", return_value=True):
+            self.app.populate_shortcuts()
         self.assertEqual(self.search("terminal"), ["Terminal"])
         self.assertEqual(self.search("sUpEr + Return"), ["Terminal", "Browser"])
         self.assertEqual(self.search("Windows Enter"), ["Terminal", "Browser"])

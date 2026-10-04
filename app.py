@@ -3,13 +3,17 @@
 from datetime import date, timedelta
 from pathlib import Path
 import os
-import shutil
+import subprocess
 import sys
+import threading
 import time
 
-from bindings import shortcut_rows
+from bindings import command_bindings, shortcut_rows
+from availability import command_available, executable
 from config import load_launchers
 from webapps import WEB_APPS
+from window_manager import enabled as tiling_enabled
+from updater import Updater, read_status
 
 import gi
 gi.require_version("Gtk", "3.0")
@@ -21,6 +25,7 @@ from gi.repository import Gdk, GdkX11, Gio, GLib, Gtk, Wnck  # noqa: E402
 ROOT = Path.home() / ".local/share/abide"
 JOURNAL = ROOT / "journal"
 SOURCE = Path(__file__).resolve().parent
+STATE = Path.home() / ".local/state/abide"
 # Keep this literal for external integrations that discover the config format.
 # Built-in shortcuts live in bindings.py; this list is only for extensions.
 DEFAULT_LAUNCHERS = []
@@ -28,6 +33,7 @@ MENUS = {
     "Abide": [
         ("Apps", "view-app-grid-symbolic", ["xfce4-appfinder"]),
         ("Settings", "preferences-system-symbolic", "Settings"),
+        ("Add-ins", "application-x-addon-symbolic", [str(Path.home() / ".local/bin/abide-addins"), "--gui"]),
         ("Capture", "camera-photo-symbolic", "Capture"),
         ("Journal", "accessories-text-editor-symbolic", [str(Path.home() / ".local/bin/abide-guide"), "--journal"]),
         ("Shortcuts", "input-keyboard-symbolic", [str(Path.home() / ".local/bin/abide-guide"), "--shortcuts"]),
@@ -40,7 +46,12 @@ MENUS = {
         ("Notifications", "preferences-system-notifications-symbolic", ["xfce4-notifyd-config"]),
         ("Keyboard", "input-keyboard-symbolic", ["xfce4-keyboard-settings"]),
         ("Mouse", "input-mouse-symbolic", ["xfce4-mouse-settings"]),
+        ("Windows", "preferences-system-windows-symbolic", "Windows"),
         ("Check for updates", "software-update-available-symbolic", [str(Path.home() / ".local/bin/abide-update"), "--gui"]),
+    ],
+    "Windows": [
+        ("Enable automatic tiling", "view-grid-symbolic", [str(Path.home() / ".local/bin/abide-wm"), "--enable", "--gui"]),
+        ("Restore floating windows", "window-symbolic", [str(Path.home() / ".local/bin/abide-wm"), "--disable", "--gui"]),
     ],
     "Capture": [
         ("Screenshot", "camera-photo-symbolic", ["xfce4-screenshooter"]),
@@ -53,6 +64,11 @@ MENUS = {
         ("Log out / power", "system-log-out-symbolic", ["xfce4-session-logout"]),
     ],
 }
+
+
+def menu_items(route):
+    return [item for item in MENUS[route] if (bool(menu_items(item[2]))
+            if isinstance(item[2], str) else command_available(item[2]))]
 
 
 def label(text, style=None):
@@ -122,6 +138,9 @@ class Panel:
         self.focus_seen = False
         self.launchers = DEFAULT_LAUNCHERS
         self.config_error = None
+        self.update_monitor = None
+        self.menu_has_update = False
+        self.menu_supported = []
 
     def activate(self):
         self.do_activate()
@@ -142,7 +161,9 @@ class Panel:
         if self.reuse_windows and reopening:
             self.status.hide()
             if self.panel == "menu":
-                rebuild = self.menu_route != "Abide" or bool(self.menu_search.get_text())
+                rebuild = (self.menu_route != "Abide" or bool(self.menu_search.get_text())
+                           or self.menu_has_update != self.update_available()
+                           or self.menu_supported != menu_items("Abide"))
                 self.menu_route = "Abide"
                 self.menu_selections.clear()
                 self.menu_search.set_text("")
@@ -164,6 +185,7 @@ class Panel:
     def build_window(self):
         window = Gtk.ApplicationWindow(application=self.application, title={
             "menu": "Abide", "journal": "Abide Journal", "shortcuts": "Abide Shortcuts"}[self.panel])
+        window.set_wmclass("abide-panel", "AbidePanel")
         window.get_style_context().add_class("abide-guide")
         window.get_style_context().add_class("abide-" + self.panel)
         window.set_decorated(False)
@@ -222,11 +244,12 @@ class Panel:
 
     def launch(self, button, command):
         window = button.get_toplevel()
-        if shutil.which(command[0]) is None:
-            self.show_error(f"{button.get_tooltip_text()} is not installed. Install {command[0]} to use it.")
+        if not command_available(command):
+            self.show_error("This tool is not installed. Open Add-ins to install it.")
             return
-        terminal = command[0] == "xfce4-terminal" or (
-            command[0] == "exo-open" and "TerminalEmulator" in command)
+        command = [executable(command[0]) or command[0], *command[1:]]
+        terminal = Path(command[0]).name == "xfce4-terminal" or (
+            Path(command[0]).name == "exo-open" and "TerminalEmulator" in command)
         screen = Wnck.Screen.get_default() if terminal else None
         if screen:
             screen.force_update()
@@ -306,22 +329,47 @@ class Panel:
         self.menu_empty.set_no_show_all(True)
         page.pack_start(self.menu_empty, False, False, 0)
         self.refresh_menu()
+        try:
+            STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+            self.update_monitor = Gio.File.new_for_path(str(STATE / "update-status.json")).monitor_file(
+                Gio.FileMonitorFlags.NONE, None)
+            self.update_monitor.connect("changed", self.on_update_status)
+        except (OSError, GLib.Error):
+            pass
         return page
+
+    def on_update_status(self, *_):
+        selected = self.menu_list.get_selected_row()
+        if selected:
+            self.menu_selections[self.menu_route] = selected.get_tooltip_text()
+        self.refresh_menu()
+
+    def update_available(self):
+        available = read_status(ROOT, STATE)
+        return bool(available and available.get("channel") == "releases"
+                    and available["result"].get("state") == "available")
 
     def refresh_menu(self, *_):
         query = self.menu_search.get_text().casefold().split()
         for row in self.menu_list.get_children():
             self.menu_list.remove(row)
         self.menu_search.set_placeholder_text("Search " + self.menu_route + "…")
-        items = list(MENUS[self.menu_route])
+        items = menu_items(self.menu_route)
+        self.menu_supported = menu_items("Abide")
+        self.menu_has_update = self.update_available()
+        if self.menu_route == "Abide" and self.menu_has_update:
+            items.append(("Update", "software-update-available-symbolic",
+                          [str(Path.home() / ".local/bin/abide-update"), "--gui"]))
         if query and self.menu_route == "Abide":
-            items += [item for route, entries in MENUS.items() if route != "Abide" for item in entries]
-            items += [(app.name, app.icon, app.command(Path.home() / ".local/bin")) for app in WEB_APPS]
+            items += [item for route in MENUS if route != "Abide" for item in menu_items(route)]
+            items += [(app.name, app.icon, app.command(Path.home() / ".local/bin")) for app in WEB_APPS
+                      if command_available(app.command(Path.home() / ".local/bin"))]
         elif self.menu_route != "Abide" and not query:
             items.insert(0, ("Back", "go-previous-symbolic", "Abide"))
         def searchable(item):
             title, _icon, action = item
-            return (title + " " + " ".join(action if isinstance(action, list) else [])).casefold()
+            aliases = " software packages components install" if title == "Add-ins" else ""
+            return (title + aliases + " " + " ".join(action if isinstance(action, list) else [])).casefold()
         matches = [item for item in items if all(word in searchable(item) for word in query)]
         if query:
             matches.sort(key=lambda item: item[0].casefold() != " ".join(query))
@@ -336,6 +384,10 @@ class Panel:
             content.pack_start(label(title), True, True, 0)
             if isinstance(action, str):
                 content.pack_end(label("›", "abide-muted"), False, False, 0)
+            elif title == "Update":
+                dot = label("●", "abide-update-dot")
+                dot.get_accessible().set_name("Update available")
+                content.pack_end(dot, False, False, 0)
             row.add(content)
             self.menu_list.add(row)
         self.menu_list.show_all()
@@ -434,14 +486,23 @@ class Panel:
 
     def reload_shortcuts(self):
         launchers, self.config_error = load_launchers(ROOT / "launchers.json", DEFAULT_LAUNCHERS)
-        if launchers != self.launchers:
-            self.launchers = launchers
-            self.populate_shortcuts()
+        self.launchers = launchers
+        items = self.available_shortcuts()
+        if items != self.shortcut_items:
+            self.populate_shortcuts(items)
 
-    def populate_shortcuts(self):
+    def available_shortcuts(self):
+        screen = Wnck.Screen.get_default()
+        screen.force_update()
+        return shortcut_rows(self.launchers, tiling=tiling_enabled(),
+                             workspace_count=screen.get_workspace_count())
+
+    def populate_shortcuts(self, items=None):
+        self.shortcut_tiling = tiling_enabled()
+        self.shortcut_items = self.available_shortcuts() if items is None else items
         for row in self.shortcut_list.get_children():
             row.destroy()
-        for description, keys in shortcut_rows(self.launchers):
+        for description, keys in self.shortcut_items:
             row = Gtk.ListBoxRow()
             row.set_activatable(False)
             row.set_selectable(False)
@@ -583,6 +644,9 @@ class Panel:
         return self.dirty
 
     def on_destroy(self, _window):
+        if self.update_monitor is not None:
+            self.update_monitor.cancel()
+            self.update_monitor = None
         self.cached_window = None
         self.clear_timers()
 
@@ -650,6 +714,9 @@ class Panels(Gtk.Application):
     def __init__(self):
         super().__init__(application_id="local.abide.Panels", flags=Gio.ApplicationFlags.IS_SERVICE)
         self.guides = {}
+        self.update_busy = False
+        self.software_busy = False
+        self.software_commands = command_bindings(Path.home() / ".local/bin")
         for name, callback in (("show", self.on_show), ("toggle", self.on_toggle)):
             action = Gio.SimpleAction.new(name, GLib.VariantType.new("s"))
             action.connect("activate", callback)
@@ -662,6 +729,30 @@ class Panels(Gtk.Application):
         Gtk.Application.do_startup(self)
         self.hold()
         GLib.idle_add(self.prewarm)
+        if os.environ.get("ABIDE_ISOLATED_DESKTOP") != "1":
+            GLib.timeout_add_seconds(10, self.check_updates_once)
+            GLib.timeout_add_seconds(60 * 60, self.check_updates)
+
+    def check_updates_once(self):
+        self.check_updates()
+        return False
+
+    def check_updates(self):
+        if not self.update_busy:
+            self.update_busy = True
+            def worker():
+                try:
+                    Updater().check_due()
+                except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+                    pass  # A failed background check belongs in Settings, not a popup.
+                finally:
+                    GLib.idle_add(self.finish_update_check)
+            threading.Thread(target=worker, daemon=True).start()
+        return True
+
+    def finish_update_check(self):
+        self.update_busy = False
+        return False
 
     def guide(self, panel):
         if panel not in ("menu", "journal", "shortcuts"):
@@ -680,15 +771,38 @@ class Panels(Gtk.Application):
         return False
 
     def on_show(self, _action, parameter):
+        self.refresh_software()
         self.guide(parameter.get_string()).activate()
 
     def on_toggle(self, _action, parameter):
+        self.refresh_software()
         guide = self.guide(parameter.get_string())
         window = guide.cached_window
         if window and window.get_visible() and window.is_active():
             window.close()
         else:
             guide.activate()
+
+    def refresh_software(self):
+        commands = command_bindings(Path.home() / ".local/bin")
+        if self.software_busy or commands == self.software_commands:
+            return
+        self.software_busy = True
+        def worker():
+            try:
+                subprocess.run([sys.executable, str(SOURCE / "install.py"), "--refresh-shortcuts"],
+                               check=True, capture_output=True, timeout=30)
+                success = True
+            except (OSError, subprocess.SubprocessError):
+                success = False
+            GLib.idle_add(self.finish_software_refresh, commands, success)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def finish_software_refresh(self, commands, success):
+        self.software_busy = False
+        if success:
+            self.software_commands = commands
+        return False
 
     def on_stop(self, _action, _parameter):
         for guide in self.guides.values():

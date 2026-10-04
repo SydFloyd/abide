@@ -154,11 +154,36 @@ def main():
                 gui.communicate(timeout=5)
             (root / "release.json").write_bytes(saved_manifest)
         print("CLI and graphical update checks passed; unpublished code stays protected.")
+        gui = subprocess.Popen([str(bin_dir / "abide-addins"), "--gui"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                while context.pending():
+                    context.iteration(False)
+                screen.force_update()
+                active = screen.get_active_window()
+                if active and active.get_name() == "Abide add-ins":
+                    assert active.is_above()
+                    assert active.get_class_group_name() == "AbidePanel"
+                    active.close(0)
+                    del active
+                    break
+                time.sleep(0.01)
+            else:
+                raise RuntimeError("The add-in manager did not open")
+            stdout, stderr = gui.communicate(timeout=5)
+            assert gui.returncode == 0, (stdout + stderr).decode()
+        finally:
+            if gui.poll() is None:
+                gui.terminate()
+                gui.communicate(timeout=5)
+        print("Add-in manager: real GUI, floating window, and software status listing passed.")
+        assert "bspwm" in run(str(bin_dir / "abide-addins"), "--list")
         with (upstream / "app.css").open("a") as css:
             css.write("\n/* Smoke test release */\n")
         run("git", "add", "app.css", cwd=upstream)
         run("git", "commit", "--quiet", "-m", "Next release", cwd=upstream)
-        updater = Updater(root, state, str(upstream))
+        updater = Updater(root, state, str(upstream), channel="main")
         checked = updater.check()
         assert checked["state"] == "available", checked
         assert updater.apply(checked["revision"])["state"] == "installed"

@@ -10,9 +10,10 @@ import subprocess
 import sys
 import time
 
-from bindings import WINDOWS, command_bindings
+from bindings import REMOVED_COMMANDS, WINDOWS, command_bindings
 from release import CODE_FILES, maintenance_lock, manifest, verify_installation
 from webapps import WEB_APPS, desktop_entry
+import window_manager
 
 HOME = Path.home()
 SOURCE = Path(__file__).resolve().parent
@@ -67,6 +68,8 @@ def targets():
         ("abide-focus", "focus.py", ""),
         ("abide-update", "updater.py", ""),
         ("abide-webapp", "webapps.py", ""),
+        ("abide-wm", "window_manager.py", ""),
+        ("abide-addins", "addins.py", ""),
         ("abide-doctor", "install.py", "sys.argv = [sys.argv[0], '--check']\n"),
         ("abide-panels-undo", "install.py", "sys.argv = [sys.argv[0], '--undo']\n"),
     ]:
@@ -98,11 +101,67 @@ def targets():
     files[HOME / ".local/share/dbus-1/services/local.abide.Panels.service"] = (
         "[D-BUS Service]\nName=local.abide.Panels\n" + f'Exec="{panels_executable}"\n'
     ).encode()
+    wm_executable = str(BIN / "abide-wm").replace("\\", "\\\\").replace('"', '\\"')
+    files[HOME / ".config/autostart/abide-wm.desktop"] = (
+        "[Desktop Entry]\nType=Application\nName=Abide window management\n"
+        + f'Exec="{wm_executable}" --autostart\n'
+        + "OnlyShowIn=XFCE;\nTerminal=false\nStartupNotify=false\n"
+        + "Comment=Restore automatic tiling when enabled\n"
+    ).encode()
+    update_executable = str(BIN / "abide-update").replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+    units = HOME / ".config/systemd/user"
+    files[units / "abide-update.service"] = (
+        "[Unit]\nDescription=Check for stable Abide releases\n\n"
+        + '[Service]\nType=oneshot\n' + f'ExecStart="{update_executable}" --background\n'
+        + "TimeoutStartSec=90\n"
+    ).encode()
+    files[units / "abide-update.timer"] = (
+        "[Unit]\nDescription=Check Abide updates at login and every six hours\n\n"
+        + "[Timer]\nOnStartupSec=2min\nOnCalendar=*-*-* 00,06,12,18:00:00\n"
+        + "RandomizedDelaySec=5min\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n"
+    ).encode()
     return files
+
+
+def update_timer_state():
+    if os.environ.get("ABIDE_ISOLATED_DESKTOP") == "1" or HOME != Path.home() or shutil.which("systemctl") is None:
+        return None
+    try:
+        if subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True, timeout=5).returncode:
+            return None
+        return {name: subprocess.run(["systemctl", "--user", "is-" + name, "abide-update.timer"],
+                                     capture_output=True, timeout=5).returncode == 0
+                for name in ("enabled", "active")}
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def configure_update_timer(previous=None):
+    if previous is None:
+        return
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True, capture_output=True, timeout=5)
+    if previous.get("restore"):
+        for action in ("enable" if previous["enabled"] else "disable", "start" if previous["active"] else "stop"):
+            subprocess.run(["systemctl", "--user", action, "abide-update.timer"],
+                           check=previous["enabled"] or previous["active"], capture_output=True, timeout=5)
+    else:
+        subprocess.run(["systemctl", "--user", "enable", "--now", "abide-update.timer"],
+                       check=True, capture_output=True, timeout=5)
 
 
 def legacy_files():
     return [HOME / ".local/bin/abide-quiet", HOME / ".local/share/abide/quiet.py"]
+
+
+def refresh_shortcuts():
+    # Only application keys are refreshed; window and voice keys retain their
+    # current owners, including bspwm's Super+T binding.
+    for key, value in command_bindings(BIN).items():
+        if key not in REMOVED_COMMANDS and xfconf(key) != value:
+            xfconf(key, value)
+    for app in WEB_APPS:
+        replace_file(HOME / ".local/share/applications" / ("abide-webapp-" + app.identifier + ".desktop"),
+                     desktop_entry(app, BIN).encode())
 
 
 def replace_file(path, data, mode=0o644):
@@ -116,6 +175,11 @@ def replace_file(path, data, mode=0o644):
 def restore(backup, snapshot):
     stop_panels()
     stop_focus()
+    if snapshot.get("update_timer") is not None:
+        subprocess.run(["systemctl", "--user", "disable", "--now", "abide-update.timer"],
+                       capture_output=True, timeout=5)
+    if "tiling_enabled" in snapshot and not snapshot["tiling_enabled"] and (STATE / "window-manager.json").exists():
+        window_manager.disable()
     for key, value in snapshot["shortcuts"].items():
         xfconf(key, value)
     # Clear the managed keys before restoring old ones: xfwm allows only one
@@ -138,6 +202,10 @@ def restore(backup, snapshot):
         start_focus()
     if snapshot.get("panels_running"):
         start_panels()
+    if snapshot.get("tiling_enabled"):
+        window_manager.enable()
+    if snapshot.get("update_timer") is not None:
+        configure_update_timer({**snapshot["update_timer"], "restore": True})
 
 
 def stop_focus():
@@ -236,7 +304,7 @@ def check_environment():
         errors.append("Run Abide setup as your desktop user, without sudo.")
     for command, package in (("gdbus", "libglib2.0-bin"), ("gapplication", "libglib2.0-bin"),
                              ("xfconf-query", "xfconf"), ("exo-open", "exo-utils"),
-                             ("xfce4-terminal", "xfce4-terminal"), ("git", "git")):
+                             ("git", "git")):
         if shutil.which(command) is None:
             errors.append(f"Missing {command}; install the Debian package {package}.")
     if not os.environ.get("DISPLAY") or os.environ.get("XDG_SESSION_TYPE") == "wayland":
@@ -250,8 +318,8 @@ gi.require_version("Wnck", "3.0")
 from gi.repository import Gtk, Gdk, GdkX11, Wnck
 if not Gtk.init_check([])[0] or not isinstance(Gdk.Display.get_default(), GdkX11.X11Display):
     raise SystemExit("Cannot connect to an X11 display.")
-if Gdk.Screen.get_default().get_window_manager_name().casefold() != "xfwm4":
-    raise SystemExit("Abide requires the Xfce window manager (xfwm4).")
+if Gdk.Screen.get_default().get_window_manager_name().casefold() not in ("xfwm4", "bspwm"):
+    raise SystemExit("Abide requires Xfce with xfwm4 or bspwm.")
 '''
         try:
             result = subprocess.run(["/usr/bin/python3", "-c", probe], capture_output=True, text=True, timeout=5)
@@ -269,7 +337,7 @@ if Gdk.Screen.get_default().get_window_manager_name().casefold() != "xfwm4":
     return errors
 
 
-def install(undo=False):
+def install(undo=False, tiling=False):
     pointer = STATE / "latest-panels-install"
     if undo:
         if not pointer.exists():
@@ -289,10 +357,12 @@ def install(undo=False):
     window_shortcuts = {key: xfconf(key, section="xfwm4") for key in windows}
     backup = STATE / "panel-installs" / datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     backup.mkdir(parents=True, mode=0o700)
-    tracked = list(files) + [LEGACY_AUTOSTART] + legacy_files()
+    tracked = list(files) + [LEGACY_AUTOSTART, STATE / "window-manager.json"] + legacy_files()
     snapshot = {"shortcuts": shortcuts, "files": {}, "super_listener": LEGACY_AUTOSTART.exists(),
                 "focus_listener": focus_running(), "window_shortcuts": window_shortcuts,
-                "panels_running": panels_running()}
+                "panels_running": panels_running(),
+                "tiling_enabled": (STATE / "window-manager.json").exists()}
+    snapshot["update_timer"] = update_timer_state()
     for path in tracked:
         relative = str(path.relative_to(HOME))
         snapshot["files"][relative] = path.exists()
@@ -312,7 +382,7 @@ def install(undo=False):
         for path in legacy_files():
             path.unlink(missing_ok=True)
         for path, data in files.items():
-            replace_file(path, data, 0o755 if path.parent == BIN else 0o644)
+            replace_file(path, data, 0o755 if path.parent == BIN or path.name == "bspwmrc" else 0o644)
         for key, value in KEYS.items():
             xfconf(key, value)
         for key, value in windows.items():
@@ -323,6 +393,9 @@ def install(undo=False):
                 xfconf(key, value, section="xfwm4")
         start_focus()
         start_panels()
+        if tiling or snapshot["tiling_enabled"]:
+            window_manager.enable()
+        configure_update_timer(snapshot["update_timer"])
     except Exception:
         restore(backup, snapshot)
         raise
@@ -331,6 +404,8 @@ def install(undo=False):
     print("Installed: Super+Space → Abide, Super+J → Journal, Super+K → Shortcuts, Super+Return → Terminal.")
     print("New application windows receive focus across the desktop; the focus helper starts at login.")
     print("One resident process keeps Abide panels ready; it starts at login and on demand.")
+    if tiling or snapshot["tiling_enabled"]:
+        print("Tiling: Super+arrows focus, Shift swaps, Ctrl resizes; Super+T floats; Super+drag moves windows.")
     print("Undo: ~/.local/bin/abide-panels-undo")
 
 
@@ -338,11 +413,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--undo", action="store_true", help="restore the last installation")
     parser.add_argument("--check", action="store_true", help="check requirements without changing anything")
+    parser.add_argument("--tiling", action="store_true", help="enable automatic tiling with bspwm")
+    parser.add_argument("--refresh-shortcuts", action="store_true", help="refresh shortcuts for installed tools")
     parser.add_argument("--expected-install", help=argparse.SUPPRESS)
     args = parser.parse_args()
     errors = check_environment()
     if errors:
         raise RuntimeError("\n".join(errors))
+    if args.tiling and not args.undo:
+        missing = [command for command in ("bspwm", "bspc", "xfwm4", "xprop") if window_manager.executable(command) is None]
+        if missing:
+            raise RuntimeError("Missing tiling dependencies: " + ", ".join(missing) + ". Run ./setup.sh --tiling.")
     if args.check:
         print("Abide is ready: Python/GTK, Xfce X11, desktop D-Bus, and update tools are available.")
         if shutil.which("simplescreenrecorder") is None:
@@ -351,7 +432,10 @@ def main():
     with maintenance_lock(STATE):
         if args.expected_install:
             verify_installation(ROOT, args.expected_install)
-        install(args.undo)
+        if args.refresh_shortcuts:
+            refresh_shortcuts()
+        else:
+            install(args.undo, tiling=args.tiling)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
+from availability import command_available, executable
 
 
 @dataclass(frozen=True)
@@ -60,7 +61,7 @@ def remove_frame(window):
 
 
 def browser_command(app, home=None):
-    browser = shutil.which("chromium") or shutil.which("chromium-browser")
+    browser = executable("chromium") or executable("chromium-browser")
     if browser is None:
         raise RuntimeError("Install Chromium to use X and Gmail app windows: sudo apt install chromium chromium-sandbox")
     profiles = (home or Path.home()) / ".local/share/abide/webapps"
@@ -110,6 +111,7 @@ def desktop_entry(app, bin_directory):
             + f'Exec="{executable}" {app.identifier}\nIcon={app.icon}\n'
             + f"StartupWMClass={app.window_class}\nTerminal=false\nStartupNotify=false\n"
             + "Categories=Network;\n" + f"Keywords=abide;webapp;{app.identifier};\n"
+            + ("" if command_available(app.command(bin_directory)) else "NoDisplay=true\n")
             + f"Comment=Open {app.name} in its own web app window\n")
 
 

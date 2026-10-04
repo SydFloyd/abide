@@ -3,6 +3,7 @@ name: Debian desktop checks
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 permissions:
@@ -20,9 +21,35 @@ jobs:
       - name: Install Debian test dependencies
         run: |
           apt-get update
-          apt-get install -y python3 python3-gi gir1.2-gtk-3.0 gir1.2-wnck-3.0 libglib2.0-bin xfconf exo-utils xfce4-terminal xfce4-settings xfce4-session xfce4-appfinder xfce4-taskmanager xfce4-screenshooter thunar mousepad git xvfb xauth xfwm4 desktop-file-utils libxtst6
+          apt-get install -y python3 python3-gi gir1.2-gtk-3.0 gir1.2-wnck-3.0 libglib2.0-bin xfconf exo-utils xfce4-terminal xfce4-settings xfce4-session xfce4-appfinder xfce4-taskmanager xfce4-screenshooter thunar mousepad git xvfb xauth xfwm4 bspwm x11-utils desktop-file-utils libxtst6
           useradd --create-home abide-ci
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Unit, GUI, fresh install, update, and undo checks
         run: |
           runuser -u abide-ci -- tests/run_desktop.sh
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: desktop
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Validate release version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from updater import version_number
+          version = Path('VERSION').read_text().strip()
+          version_number(version)
+          assert os.environ['RELEASE_TAG'] == 'v' + version, 'Tag must match VERSION'
+          PY
+      - name: Publish the tested stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" --verify-tag --generate-notes --title "Abide $RELEASE_TAG" --latest

@@ -12,7 +12,7 @@ from bindings import APPLICATIONS, WINDOWS, command_bindings, shortcut_rows
 from config import load_launchers
 import install
 from release import CODE_FILES, install_identity, maintenance_lock, manifest, verify_installation
-from updater import Updater
+from updater import Updater, read_status
 
 SOURCE = Path(__file__).resolve().parents[1]
 
@@ -36,12 +36,13 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(load_launchers(path, defaults), (valid, None))
 
     def test_shortcut_registry_covers_installed_keys_and_integrations(self):
-        custom = [["Terminal", "My terminal keys", "icon", ["terminal"]],
-                  ["Voice", "Hold Super + V", "icon", ["voice"]]]
+        custom = [["Terminal", "My terminal keys", "icon", ["/usr/bin/true"]],
+                  ["Voice", "Hold Super + V", "icon", ["/usr/bin/true"]]]
         rows = shortcut_rows(custom)
         self.assertEqual([keys for title, keys in rows if title == "Terminal"], ["My terminal keys"])
         self.assertIn(("Voice", "Hold Super + V"), rows)
-        commands = command_bindings(Path("/tmp/Father's Desktop/bin"))
+        with patch("bindings.command_available", return_value=True):
+            commands = command_bindings(Path("/tmp/Father's Desktop/bin"))
         self.assertIn("'/tmp/Father", commands["<Super>space"])
         for _title, _label, keys, _command in APPLICATIONS:
             for key in keys:
@@ -99,13 +100,14 @@ class UpdateTests(unittest.TestCase):
         self.root = base / "installed"
         self.root.mkdir()
         self.state = base / "state"
-        self.updater = Updater(self.root, self.state, str(self.remote))
+        self.updater = Updater(self.root, self.state, str(self.remote), channel="main")
         self.git("init", "--quiet", "-b", "main")
         self.git("config", "user.name", "Abide test")
         self.git("config", "user.email", "abide-test@example.invalid")
         self.git("config", "commit.gpgsign", "false")
         for name in CODE_FILES:
             shutil.copy2(SOURCE / name, self.remote / name)
+        (self.remote / "VERSION").write_text("0.1.0\n")
         tests = self.remote / "tests"
         tests.mkdir()
         (tests / "test_panels.py").write_text("import unittest\nclass Smoke(unittest.TestCase):\n def test_release(self): pass\n")
@@ -232,6 +234,86 @@ class UpdateTests(unittest.TestCase):
         (self.root / "release.json").write_text(json.dumps(data))
         with self.assertRaisesRegex(RuntimeError, "changed while"):
             verify_installation(self.root, identity)
+
+    def published_release(self, version, annotated=False):
+        (self.remote / "VERSION").write_text(version + "\n")
+        revision = self.commit("Release " + version)
+        self.git("tag", *( ["-a", "-m", version] if annotated else []), "v" + version)
+        return revision
+
+    def test_stable_channel_ignores_main_until_a_release_is_published(self):
+        self.git("tag", "v0.1.0")
+        self.copy_installed(self.remote)
+        self.updater.channel = "releases"
+        self.advance()
+        with patch.object(self.updater, "latest_release", return_value="v0.1.0"):
+            self.assertEqual(self.updater.check()["state"], "current")
+        revision = self.published_release("0.2.0", annotated=True)
+        with patch.object(self.updater, "latest_release", return_value="v0.2.0"):
+            result = self.updater.check()
+        self.assertEqual(result["state"], "available")
+        self.assertEqual(result["version"], "0.2.0")
+        self.assertEqual(result["revision"], revision)
+
+    def test_newer_commit_with_an_older_version_cannot_downgrade(self):
+        self.git("tag", "v0.1.0")
+        self.copy_installed(self.remote)
+        self.updater.channel = "releases"
+        self.published_release("0.0.9")
+        with patch.object(self.updater, "latest_release", return_value="v0.0.9"):
+            self.assertEqual(self.updater.check()["state"], "current")
+
+    def test_stable_release_is_pinned_validated_and_installed_with_its_version(self):
+        self.updater.channel = "releases"
+        revision = self.published_release("0.2.0", annotated=True)
+        execute = self.updater.run
+        def install(arguments, **options):
+            if arguments[0] == "/usr/bin/python3" and arguments[1].endswith("/install.py"):
+                verify_installation(self.root, arguments[-1])
+                candidate = Path(arguments[1]).parent
+                self.copy_installed(candidate)
+                return "Installed"
+            return execute(arguments, **options)
+        with patch.object(self.updater, "latest_release", return_value="v0.2.0"), \
+                patch.object(self.updater, "run", side_effect=install):
+            self.assertEqual(self.updater.apply(revision)["state"], "installed")
+        self.assertEqual(json.loads((self.root / "release.json").read_text())["version"], "0.2.0")
+        self.assertEqual(read_status(self.root, self.state)["result"]["state"], "installed")
+        self.assert_private_data()
+
+    def test_no_published_release_is_a_normal_check_result(self):
+        self.updater.channel = "releases"
+        with patch.object(self.updater, "latest_release", return_value=None):
+            self.assertEqual(self.updater.check()["state"], "current")
+        self.assertFalse(self.updater.cache.exists())
+
+    def test_offline_check_preserves_a_known_available_update(self):
+        self.advance()
+        self.updater.check()
+        with patch.object(self.updater, "fetch", side_effect=RuntimeError("Offline")):
+            with self.assertRaisesRegex(RuntimeError, "Offline"):
+                self.updater.check()
+        cached = read_status(self.root, self.state)
+        self.assertEqual(cached["result"]["state"], "available")
+        self.assertEqual(cached["error"], "Offline")
+        self.assert_private_data()
+
+    def test_fresh_cache_skips_network_and_a_different_install_invalidates_it(self):
+        self.updater.check()
+        with patch.object(self.updater, "fetch") as fetch:
+            self.assertEqual(self.updater.check_due()["state"], "current")
+            fetch.assert_not_called()
+        self.advance()
+        self.copy_installed(self.remote)
+        self.assertIsNone(read_status(self.root, self.state))
+
+    def test_invalid_status_file_is_ignored(self):
+        self.state.mkdir()
+        path = self.state / "update-status.json"
+        for value in ("{", "null", "[]", '{"format":1}', " " * 65537):
+            with self.subTest(value=value[:30]):
+                path.write_text(value)
+                self.assertIsNone(read_status(self.root, self.state))
 
 
 if __name__ == "__main__":

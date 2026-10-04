@@ -41,13 +41,16 @@ PY
     fi
     sleep 0.1
   done
-  ABIDE_GUI_TEST=1 /usr/bin/python3 -m unittest discover -s tests -v
-  /usr/bin/python3 tests/install_smoke.py
+  if [ "${ABIDE_TILING_ONLY:-}" != 1 ]; then
+    ABIDE_GUI_TEST=1 /usr/bin/python3 -m unittest discover -s tests -v
+    /usr/bin/python3 tests/install_smoke.py
+  fi
+  /usr/bin/python3 tests/tiling_smoke.py
   exit 0
 fi
-for command in xvfb-run xfwm4 xfsettingsd dbus-run-session desktop-file-validate; do
+for command in xvfb-run xfwm4 bspwm bspc xprop xfsettingsd dbus-run-session desktop-file-validate; do
   if ! command -v "$command" >/dev/null 2>&1; then
-    echo 'Install test dependencies: sudo apt install xvfb xauth xfwm4 desktop-file-utils libxtst6' >&2
+    echo 'Install test dependencies: sudo apt install xvfb xauth xfwm4 bspwm x11-utils desktop-file-utils libxtst6' >&2
     exit 1
   fi
 done

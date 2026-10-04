@@ -7,8 +7,10 @@ from pathlib import Path
 import subprocess
 
 REPOSITORY = "https://github.com/SydFloyd/abide.git"
+RELEASES_API = "https://api.github.com/repos/SydFloyd/abide/releases/latest"
 CODE_FILES = ("app.py", "app.css", "focus.py", "install.py", "launcher.sh",
-              "bindings.py", "config.py", "release.py", "updater.py", "webapps.py")
+              "bindings.py", "config.py", "release.py", "updater.py", "webapps.py",
+              "window_manager.py", "bspwmrc", "VERSION", "addins.py", "availability.py")
 
 
 def file_hashes(source):
@@ -30,10 +32,16 @@ def manifest(source):
         if Path(git("rev-parse", "--show-toplevel")).resolve() != source.resolve():
             raise OSError("Not an Abide checkout")
         revision = git("rev-parse", "HEAD")
+        version = (source / "VERSION").read_text().strip()
+        try:
+            tagged = git("rev-parse", f"v{version}^{{commit}}") == revision
+        except subprocess.SubprocessError:
+            tagged = False
         tracked = set(git("ls-files", "--", *CODE_FILES).splitlines())
         dirty = bool(git("status", "--porcelain", "--untracked-files=all", "--", *CODE_FILES))
         return {"format": 1, "repository": REPOSITORY, "revision": revision,
-                "local_changes": dirty or tracked != set(CODE_FILES), "files": files}
+                "local_changes": dirty or tracked != set(CODE_FILES), "files": files,
+                "version": version if tagged else None}
     except (OSError, subprocess.SubprocessError):
         try:
             saved = json.loads((source / "release.json").read_text())

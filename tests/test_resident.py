@@ -124,7 +124,7 @@ class ResidentTests(unittest.TestCase):
         window = guide.cached_window
         window.close()
         self.pump()
-        rows = self.ui.DEFAULT_LAUNCHERS + [("Voice integration test", "Hold Super + V", "audio", ["voice"])]
+        rows = self.ui.DEFAULT_LAUNCHERS + [("Voice integration test", "Hold Super + V", "audio", ["/usr/bin/true"])]
         temporary = self.ui.ROOT / "launchers.voice-tmp"
         temporary.write_text(json.dumps(rows))
         temporary.replace(self.ui.ROOT / "launchers.json")

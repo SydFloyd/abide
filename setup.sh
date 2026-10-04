@@ -18,11 +18,16 @@ case ":$(printf '%s' "${XDG_CURRENT_DESKTOP:-}" | tr '[:upper:]' '[:lower:]'):" 
   *) echo 'Choose the Xfce desktop at login before running ./setup.sh.' >&2; exit 1 ;;
 esac
 setup_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-packages='python3 python3-gi gir1.2-gtk-3.0 gir1.2-wnck-3.0 libglib2.0-bin xfconf exo-utils xfce4-terminal xfce4-settings xfce4-session xfce4-appfinder xfce4-taskmanager xfce4-screenshooter thunar mousepad git'
-if [ "${1:-}" = --webapps ]; then
-  packages="$packages chromium chromium-sandbox"
-  shift
-fi
+packages='python3 python3-gi gir1.2-gtk-3.0 gir1.2-wnck-3.0 libglib2.0-bin xfconf exo-utils xfce4-settings xfce4-session xfce4-appfinder git'
+for setup_option in "$@"; do
+  case "$setup_option" in
+    --webapps) packages="$packages chromium chromium-sandbox" ;;
+    --tiling) packages="$packages bspwm xfwm4 x11-utils" ;;
+    --capture) packages="$packages xfce4-screenshooter" ;;
+    --recording) packages="$packages simplescreenrecorder" ;;
+    --desktop-tools) packages="$packages xfce4-terminal thunar mousepad xfce4-taskmanager" ;;
+  esac
+done
 missing=''
 for package in $packages; do
   if [ "$(dpkg-query -W -f='${db:Status-Status}' "$package" 2>/dev/null || true)" != installed ]; then
@@ -35,4 +40,16 @@ if [ -n "$missing" ]; then
   # The package names are fixed above, rather than supplied by user input.
   sudo apt-get install -y $missing
 fi
+# --webapps only controls package installation; the Python installer does not
+# need it. Keep other arguments intact, including when paths contain spaces.
+setup_argument_count=$#
+while [ "$setup_argument_count" -gt 0 ]; do
+  setup_argument=$1
+  shift
+  case "$setup_argument" in
+    --webapps|--capture|--recording|--desktop-tools) ;;
+    *) set -- "$@" "$setup_argument" ;;
+  esac
+  setup_argument_count=$((setup_argument_count - 1))
+done
 exec /usr/bin/python3 "$setup_directory/install.py" "$@"

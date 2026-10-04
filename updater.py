@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Check main and install a tested revision without touching a user's checkout."""
+"""Check stable releases and install a tested revision without touching a checkout."""
 import argparse
 import hashlib
 import json
@@ -10,16 +10,82 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
-from release import REPOSITORY, file_hashes, install_identity, maintenance_lock
+from release import REPOSITORY, RELEASES_API, file_hashes, install_identity, maintenance_lock
+
+CHECK_INTERVAL = 6 * 60 * 60
+
+
+def version_number(value):
+    if not isinstance(value, str) or not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", value):
+        raise ValueError("Expected a stable version such as 0.1.0.")
+    return tuple(int(number) for number in value.split("."))
+
+
+def read_status(root=None, state=None):
+    root = root or Path.home() / ".local/share/abide"
+    state = state or Path.home() / ".local/state/abide"
+    try:
+        with (state / "update-status.json").open("rb") as source:
+            data = json.loads(source.read(65537))
+        if (data.get("format") != 1 or data.get("installation") != install_identity(root)
+                or not isinstance(data.get("checked_at"), (int, float))
+                or not isinstance(data.get("result"), dict)):
+            return None
+        return data
+    except (OSError, ValueError, AttributeError):
+        return None
 
 
 class Updater:
-    def __init__(self, root=None, state=None, repository=REPOSITORY):
+    def __init__(self, root=None, state=None, repository=REPOSITORY, channel="releases"):
         self.root = root or Path.home() / ".local/share/abide"
         self.state = state or Path.home() / ".local/state/abide"
         self.repository = repository
         self.cache = self.state / "updates.git"
+        if channel not in ("releases", "main"):
+            raise ValueError("Unknown update channel")
+        self.channel = channel
+        self.latest_version = None
+
+    def latest_release(self):
+        request = Request(RELEASES_API, headers={"Accept": "application/vnd.github+json",
+                                               "User-Agent": "Abide-updater",
+                                               "X-GitHub-Api-Version": "2022-11-28"})
+        try:
+            with urlopen(request, timeout=15) as response:
+                raw = response.read(65537)
+            if len(raw) > 65536:
+                raise ValueError("Release information is too large")
+            release = json.loads(raw)
+            if not isinstance(release, dict) or release.get("draft") or release.get("prerelease"):
+                raise ValueError("Expected a published stable release")
+            tag = release.get("tag_name")
+            if not isinstance(tag, str) or not tag.startswith("v"):
+                raise ValueError("Invalid release tag")
+            version_number(tag[1:])
+            return tag
+        except HTTPError as error:
+            if error.code == 404:
+                return None
+            raise RuntimeError("GitHub could not provide release information. Try again later.") from None
+        except (OSError, URLError):
+            raise RuntimeError("Could not check for releases. Check your connection and try again.") from None
+        except (ValueError, UnicodeError):
+            raise RuntimeError("GitHub returned invalid release information. Your installation is unchanged.") from None
+
+    def save_status(self, result, error=None):
+        data = {"format": 1, "installation": install_identity(self.root), "checked_at": time.time(),
+                "result": result, "channel": self.channel}
+        if error:
+            data["error"] = error
+        temporary = self.state / "update-status.tmp"
+        temporary.write_text(json.dumps(data) + "\n")
+        temporary.chmod(0o600)
+        temporary.replace(self.state / "update-status.json")
 
     def run(self, arguments, *, cwd=None, timeout=30, env=None):
         environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
@@ -41,11 +107,20 @@ class Updater:
         return self.run(["git", "--git-dir", str(self.cache), *arguments])
 
     def fetch(self):
+        self.latest_version = None
+        if self.channel == "releases":
+            tag = self.latest_release()
+            if tag is None:
+                return None
+            self.latest_version = tag[1:]
+            ref = f"refs/tags/{tag}"
+            target = ref
+        else:
+            ref, target = "refs/heads/main", "refs/remotes/origin/main"
         if not self.cache.exists():
             self.run(["git", "init", "--bare", "--quiet", str(self.cache)])
-        self.git("fetch", "--quiet", "--no-tags", self.repository,
-                 "+refs/heads/main:refs/remotes/origin/main")
-        return self.git("rev-parse", "refs/remotes/origin/main")
+        self.git("fetch", "--quiet", "--no-tags", self.repository, f"+{ref}:{target}")
+        return self.git("rev-parse", target + "^{commit}")
 
     def same_code(self, revision, files):
         # A squash/rebase can publish identical code under a new commit ID.
@@ -67,27 +142,51 @@ class Updater:
             raise RuntimeError("This installation's update information is invalid. Reinstall Abide using ./setup.sh.")
         revision = installed.get("revision")
         if installed.get("local_changes") or not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40,64}", revision):
-            return {"state": "local", "message": "This is a local build. Publish it to main before using updates."}
+            return {"state": "local", "message": "This is a local build. Install a published release to enable stable updates."}
         if file_hashes(self.root) != installed.get("files"):
             return {"state": "local", "message": "Abide has local code changes. Updates will preserve them; reinstall when you are ready."}
         latest = self.fetch()
+        if latest is None:
+            return {"state": "current", "message": "No stable Abide release has been published yet."}
         if latest == revision:
             return {"state": "current", "revision": latest, "message": "Abide is up to date."}
+        if self.latest_version and installed.get("version"):
+            if version_number(self.latest_version) <= version_number(installed["version"]):
+                return {"state": "current", "revision": revision, "message": "Abide is up to date."}
         ancestor = subprocess.run(["git", "--git-dir", str(self.cache), "merge-base", "--is-ancestor", revision, latest],
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
         if ancestor.returncode != 0 and not self.same_code(latest, installed["files"]):
-            return {"state": "local", "message": "This build is ahead of main or from another branch. Updates will preserve it."}
-        return {"state": "available", "revision": latest, "message": "An Abide update is available."}
+            target = "main" if self.channel == "main" else "the latest stable release"
+            return {"state": "local", "message": f"This build is ahead of {target} or from another branch. Updates will preserve it."}
+        result = {"state": "available", "revision": latest, "message": "An Abide update is available."}
+        if self.latest_version:
+            result.update(version=self.latest_version, message=f"Abide {self.latest_version} is available.")
+        return result
 
     def check(self):
         with maintenance_lock(self.state, "update.lock"):
-            return self._check()
+            try:
+                result = self._check()
+            except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+                previous = read_status(self.root, self.state)
+                if (self.root / "release.json").exists():
+                    self.save_status(previous["result"] if previous else {"state": "error"}, str(error))
+                raise
+            self.save_status(result)
+            return result
+
+    def check_due(self):
+        saved = read_status(self.root, self.state)
+        if saved and saved.get("channel") == self.channel and time.time() - saved["checked_at"] < CHECK_INTERVAL:
+            return saved["result"]
+        return self.check()
 
     def apply(self, expected=None):
         with maintenance_lock(self.state, "update.lock"):
             identity = install_identity(self.root)
             result = self._check()
             if result["state"] == "current":
+                self.save_status(result)
                 return result
             if result["state"] != "available":
                 raise RuntimeError(result["message"])
@@ -109,7 +208,9 @@ class Updater:
                 # lock, even if somebody installed another build during fetch.
                 self.run(["/usr/bin/python3", str(source / "install.py"),
                           "--expected-install", identity], timeout=60)
-            return {"state": "installed", "revision": revision, "message": "Abide is updated and ready."}
+            result = {"state": "installed", "revision": revision, "message": "Abide is updated and ready."}
+            self.save_status(result)
+            return result
 
 
 def run_gui():
@@ -133,6 +234,7 @@ def run_gui():
         def do_activate(self):
             if self.window is None:
                 self.window = Gtk.ApplicationWindow(application=self, title="Abide updates")
+                self.window.set_wmclass("abide-updates", "AbidePanel")
                 self.window.set_decorated(False)
                 self.window.set_resizable(False)
                 self.window.set_keep_above(True)
@@ -203,7 +305,7 @@ def run_gui():
             def worker():
                 try:
                     result, error = operation(), None
-                except (OSError, RuntimeError, subprocess.SubprocessError) as problem:
+                except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as problem:
                     result, error = None, str(problem)
                 GLib.idle_add(self.finish, result, error)
             threading.Thread(target=worker, daemon=True).start()
@@ -231,13 +333,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--gui", action="store_true", help="open the update panel")
-    action.add_argument("--apply", action="store_true", help="install the latest main revision")
+    action.add_argument("--apply", action="store_true", help="install the latest stable release")
     action.add_argument("--check", action="store_true", help="check without installing (the default)")
+    action.add_argument("--background", action="store_true", help="check when due and cache the result")
+    parser.add_argument("--channel", choices=("releases", "main"), default="releases",
+                        help="use stable releases (default) or the development branch")
     args = parser.parse_args()
     if args.gui:
         return run_gui()
-    updater = Updater()
-    result = updater.apply() if args.apply else updater.check()
+    updater = Updater(channel=args.channel)
+    result = updater.apply() if args.apply else updater.check_due() if args.background else updater.check()
     print(result["message"])
     return 0
 
@@ -245,6 +350,6 @@ def main():
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print("Abide: " + str(error), file=sys.stderr)
         raise SystemExit(1)
