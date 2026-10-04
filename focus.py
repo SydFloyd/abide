@@ -1,6 +1,8 @@
 #!/usr/bin/python3
-"""Focus newly opened application windows across an Xfce X11 desktop."""
+"""Focus new windows and keep Abide web apps borderless on Xfce X11."""
 import sys
+
+from webapps import remove_frame
 
 import gi
 gi.require_version("Gdk", "3.0")
@@ -15,9 +17,12 @@ class NewWindowFocus:
         self.screen = screen
         self.root = root
         self.pending = {}
+        self.frame_handlers = {}
         # Populate the initial window list before subscribing: starting this
         # service must not change focus to an already-open window.
         screen.force_update()
+        for window in screen.get_windows():
+            self.watch_webapp(window)
         self.handlers = [screen.connect("window-opened", self.on_opened),
                          screen.connect("window-closed", self.on_closed)]
 
@@ -39,9 +44,22 @@ class NewWindowFocus:
             self.pending[xid] = GLib.idle_add(self.focus_window, xid)
 
     def on_closed(self, screen, window):
+        handler = self.frame_handlers.pop(window.get_xid(), None)
+        if handler is not None:
+            window.disconnect(handler)
         source = self.pending.pop(window.get_xid(), None)
         if source:
             GLib.source_remove(source)
+
+    def watch_webapp(self, window):
+        if remove_frame(window) and window.get_xid() not in self.frame_handlers:
+            self.frame_handlers[window.get_xid()] = window.connect("geometry-changed", self.on_geometry_changed)
+
+    def on_geometry_changed(self, window):
+        # Chromium can restore its frame while finishing startup or resizing.
+        # A geometry change reports that frame; no polling is needed.
+        if window.get_geometry() != window.get_client_window_geometry():
+            remove_frame(window)
 
     def focus_window(self, xid):
         self.pending.pop(xid, None)
@@ -49,7 +67,10 @@ class NewWindowFocus:
         # Resolve at dispatch time: a window may close before the idle runs.
         # Older libwnck releases also cannot safely retain closed windows.
         window = next((item for item in self.screen.get_windows() if item.get_xid() == xid), None)
-        if window is None or not self.eligible(window):
+        if window is None:
+            return False
+        self.watch_webapp(window)
+        if not self.eligible(window):
             return False
         active = self.screen.get_active_window()
         if active is None or active.get_xid() != window.get_xid():
@@ -64,6 +85,11 @@ class NewWindowFocus:
         for source in self.pending.values():
             GLib.source_remove(source)
         self.pending.clear()
+        for xid, handler in self.frame_handlers.items():
+            window = Wnck.Window.get(xid)
+            if window is not None:
+                window.disconnect(handler)
+        self.frame_handlers.clear()
 
 
 class FocusApplication(Gio.Application):

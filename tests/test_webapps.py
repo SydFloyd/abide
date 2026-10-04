@@ -97,6 +97,69 @@ class WebAppDesktopTests(unittest.TestCase):
                 context.iteration(False)
             time.sleep(0.005)
 
+    def test_existing_and_new_webapps_lose_their_frames_only(self):
+        import gi
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("Gdk", "3.0")
+        gi.require_version("Wnck", "3.0")
+        from gi.repository import Gtk, Gdk, Wnck
+        from focus import NewWindowFocus
+        Gtk.init([])
+        existing = Gtk.Window(title="Existing Abide web app")
+        existing.set_wmclass("abide-webapp-test", WEB_APPS[0].window_class)
+        new = Gtk.Window(title="New Abide web app")
+        new.set_wmclass("abide-webapp-test", WEB_APPS[1].window_class)
+        ordinary = Gtk.Window(title="X")
+        dialog = Gtk.Window(title="Web app authentication")
+        dialog.set_wmclass("abide-webapp-dialog", WEB_APPS[0].window_class)
+        dialog.set_type_hint(Gdk.WindowTypeHint.DIALOG)
+        screen = Wnck.Screen.get_default()
+        root = Gdk.get_default_root_window()
+        root.set_events(root.get_events() | Gdk.EventMask.PROPERTY_CHANGE_MASK)
+        watcher = None
+
+        def has_frame(widget):
+            screen.force_update()
+            window = Wnck.Window.get(widget.get_window().get_xid())
+            return window.get_geometry() != window.get_client_window_geometry()
+
+        try:
+            for widget in (existing, dialog, ordinary):
+                widget.show_all()
+            ordinary.present()
+            self.pump()
+            self.assertTrue(has_frame(existing))
+            self.assertTrue(ordinary.is_active())
+            watcher = NewWindowFocus(screen, root)
+            self.pump()
+            self.assertFalse(has_frame(existing))
+            self.assertTrue(has_frame(ordinary))
+            self.assertTrue(has_frame(dialog))
+            self.assertTrue(ordinary.is_active(), "Restyling existing apps must not steal focus")
+            existing.get_window().set_decorations(Gdk.WMDecoration.ALL)
+            Gdk.Display.get_default().flush()
+            self.pump()
+            self.assertFalse(has_frame(existing), "A browser must not restore the frame")
+            new.show_all()
+            self.pump()
+            self.assertFalse(has_frame(new))
+            new.maximize()
+            self.pump()
+            new.unmaximize()
+            self.pump()
+            self.assertFalse(has_frame(new))
+            xid = new.get_window().get_xid()
+            self.assertIn(xid, watcher.frame_handlers)
+            new.destroy()
+            self.pump()
+            self.assertNotIn(xid, watcher.frame_handlers)
+        finally:
+            if watcher is not None:
+                watcher.stop()
+            for widget in (new, ordinary, dialog, existing):
+                widget.destroy()
+            self.pump()
+
     def test_shortcut_focuses_the_matching_app_and_restores_minimized_windows(self):
         import gi
         gi.require_version("Gtk", "3.0")
