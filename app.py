@@ -2,11 +2,13 @@
 """Three dedicated Xfce panels: apps, a local journal, and searchable shortcuts."""
 from datetime import date, timedelta
 from pathlib import Path
-import json
 import os
-import subprocess
+import shutil
 import sys
 import time
+
+from bindings import shortcut_rows
+from config import load_launchers
 
 import gi
 gi.require_version("Gtk", "3.0")
@@ -18,24 +20,38 @@ from gi.repository import Gdk, GdkX11, Gio, GLib, Gtk, Wnck  # noqa: E402
 ROOT = Path.home() / ".local/share/abide"
 JOURNAL = ROOT / "journal"
 SOURCE = Path(__file__).resolve().parent
-VERSES = json.loads(((ROOT / "scripture.json") if (ROOT / "scripture.json").exists()
-                     else SOURCE / "scripture.json").read_text())
-QUIET = str(Path.home() / ".local/bin/abide-quiet")
-DEFAULT_LAUNCHERS = [
-    ("Terminal", "Super + Return", "utilities-terminal-symbolic", ["exo-open", "--launch", "TerminalEmulator"]),
-    ("Browser", "Super + B", "web-browser-symbolic", ["exo-open", "--launch", "WebBrowser"]),
-    ("Files", "Super + E", "system-file-manager-symbolic", ["thunar"]),
-    ("Mousepad", "Super + M", "accessories-text-editor-symbolic", ["mousepad"]),
-    ("Find an app", "Alt + F3", "system-search-symbolic", ["xfce4-appfinder"]),
-]
-LAUNCHERS = (json.loads((ROOT / "launchers.json").read_text())
-             if (ROOT / "launchers.json").exists() else DEFAULT_LAUNCHERS)
-SETTINGS = [
-    ("Display", "video-display-symbolic", ["xfce4-display-settings"]),
-    ("Appearance", "preferences-system-symbolic", ["xfce4-appearance-settings"]),
-    ("Notifications", "preferences-system-notifications-symbolic", ["xfce4-notifyd-config"]),
-    ("Screenshot", "camera-photo-symbolic", ["xfce4-screenshooter"]),
-]
+# Keep this literal for external integrations that discover the config format.
+# Built-in shortcuts live in bindings.py; this list is only for extensions.
+DEFAULT_LAUNCHERS = []
+MENUS = {
+    "Abide": [
+        ("Apps", "view-app-grid-symbolic", ["xfce4-appfinder"]),
+        ("Settings", "preferences-system-symbolic", "Settings"),
+        ("Capture", "camera-photo-symbolic", "Capture"),
+        ("Journal", "accessories-text-editor-symbolic", [str(Path.home() / ".local/bin/abide-guide"), "--journal"]),
+        ("Shortcuts", "input-keyboard-symbolic", [str(Path.home() / ".local/bin/abide-guide"), "--shortcuts"]),
+        ("Session", "system-log-out-symbolic", "Session"),
+    ],
+    "Settings": [
+        ("All settings", "preferences-system-symbolic", ["xfce4-settings-manager"]),
+        ("Display", "video-display-symbolic", ["xfce4-display-settings"]),
+        ("Appearance", "preferences-desktop-theme-symbolic", ["xfce4-appearance-settings"]),
+        ("Notifications", "preferences-system-notifications-symbolic", ["xfce4-notifyd-config"]),
+        ("Keyboard", "input-keyboard-symbolic", ["xfce4-keyboard-settings"]),
+        ("Mouse", "input-mouse-symbolic", ["xfce4-mouse-settings"]),
+        ("Check for updates", "software-update-available-symbolic", [str(Path.home() / ".local/bin/abide-update"), "--gui"]),
+    ],
+    "Capture": [
+        ("Screenshot", "camera-photo-symbolic", ["xfce4-screenshooter"]),
+        ("Screenshot area", "edit-select-all-symbolic", ["xfce4-screenshooter", "-r"]),
+        ("Screenshot window", "window-symbolic", ["xfce4-screenshooter", "-w"]),
+        ("Record screen", "media-record-symbolic", ["simplescreenrecorder"]),
+    ],
+    "Session": [
+        ("Lock", "system-lock-screen-symbolic", ["xflock4"]),
+        ("Log out / power", "system-log-out-symbolic", ["xfce4-session-logout"]),
+    ],
+}
 
 
 def label(text, style=None):
@@ -88,88 +104,126 @@ def open_terminal():
     return 0 if focused else 1
 
 
-class Guide(Gtk.Application):
-    def __init__(self, panel="menu"):
+class Panel:
+    def __init__(self, panel, application, reuse_windows=True):
         if panel not in ("menu", "journal", "shortcuts"):
             raise ValueError("Unknown Abide panel: " + panel)
-        super().__init__(application_id="local.abide." + panel.capitalize(), flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+        self.application = application
         self.panel = panel
+        self.reuse_windows = reuse_windows
+        self.cached_window = None
         self.day = date.today()
         self.dirty = False
         self.save_timer = 0
-        self.quiet_timer = 0
-        self.syncing_quiet = False
+        self.syncing_date = False
         self.blur_timer = 0
         self.launch_timer = 0
         self.focus_seen = False
+        self.launchers = DEFAULT_LAUNCHERS
+        self.config_error = None
 
-    def do_command_line(self, command_line):
-        arguments = command_line.get_arguments()
-        window = self.get_active_window()
-        if "--toggle" in arguments and window and window.is_active():
-            window.close()
-            return 0
-        self.activate()
-        return 0
+    def activate(self):
+        self.do_activate()
+
+    def get_active_window(self):
+        return self.cached_window
+
+    def get_windows(self):
+        return [self.cached_window] if self.cached_window else []
 
     def do_activate(self):
-        if self.get_active_window():
-            self.get_active_window().present()
-            return
-        window = Gtk.ApplicationWindow(application=self, title={
+        window = self.cached_window or self.get_active_window()
+        reopening = window is not None and not window.get_visible()
+        if window is None:
+            window = self.build_window()
+        elif self.panel == "shortcuts":
+            self.reload_shortcuts()
+        if self.reuse_windows and reopening:
+            self.status.hide()
+            if self.panel == "menu":
+                rebuild = self.menu_route != "Abide" or bool(self.menu_search.get_text())
+                self.menu_route = "Abide"
+                self.menu_selections.clear()
+                self.menu_search.set_text("")
+                if rebuild:
+                    self.refresh_menu()
+                self.menu_list.select_row(self.menu_list.get_row_at_index(0))
+            elif self.panel == "shortcuts":
+                self.shortcut_search.set_text("")
+                self.shortcut_scroll.get_vadjustment().set_value(0)
+            else:
+                previous_day = self.day
+                self.day = date.today()
+                if not self.load_day():
+                    self.day = previous_day
+        self.present_window(window)
+        if self.config_error:
+            self.show_error(self.config_error)
+
+    def build_window(self):
+        window = Gtk.ApplicationWindow(application=self.application, title={
             "menu": "Abide", "journal": "Abide Journal", "shortcuts": "Abide Shortcuts"}[self.panel])
         window.get_style_context().add_class("abide-guide")
+        window.get_style_context().add_class("abide-" + self.panel)
+        window.set_decorated(False)
+        window.set_resizable(False)
+        window.set_keep_above(True)
+        window.set_skip_taskbar_hint(True)
+        window.set_skip_pager_hint(True)
+        window.set_type_hint(Gdk.WindowTypeHint.DIALOG)
         window.set_position(Gtk.WindowPosition.CENTER)
-        window.set_default_size(940 if self.panel == "shortcuts" else 820, 640)
+        window.set_default_size(*{"menu": (-1, -1), "shortcuts": (820, 600),
+                                  "journal": (700, 460)}[self.panel])
         window.connect("key-press-event", self.on_key)
         window.connect("delete-event", self.on_close)
         window.connect("destroy", self.on_destroy)
         self.focus_seen = False
         window.connect("notify::is-active", self.on_active)
-        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
-        body.set_border_width(26)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        body.set_border_width(12 if self.panel == "menu" else 18)
         window.add(body)
         css = SOURCE / "app.css"
-        if css.exists():
+        if css.exists() and not getattr(self.application, "abide_css", None):
             provider = Gtk.CssProvider()
             provider.load_from_path(str(css))
             Gtk.StyleContext.add_provider_for_screen(window.get_screen(), provider,
                                                     Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-        header = Gtk.Box(spacing=20)
-        title = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        title.pack_start(label({"menu": "ABIDE", "journal": "JOURNAL", "shortcuts": "SHORTCUTS"}[self.panel],
-                               "abide-heading"), False, False, 0)
-        title.pack_start(label("Faith · Hope · Love", "abide-muted"), False, False, 0)
-        header.pack_start(title, True, True, 0)
-        if self.panel == "menu":
-            self.quiet = Gtk.ToggleButton(label="Quiet mode · Super + Q")
-            self.quiet.set_valign(Gtk.Align.CENTER)
-            self.quiet.set_tooltip_text("Toggle Do Not Disturb for desktop notifications.")
-            self.quiet.connect("toggled", self.on_quiet)
-            header.pack_end(self.quiet, False, False, 0)
-        body.pack_start(header, False, False, 0)
+            self.application.abide_css = provider
         self.page = {"menu": self.open_page, "journal": self.reflect_page,
                      "shortcuts": self.shortcuts_page}[self.panel]()
         body.pack_start(self.page, True, True, 0)
-        self.status = label({
-            "menu": "Super + J · Journal    Super + K · Shortcuts    Esc · Close",
-            "journal": "Entries stay on this computer. Esc · Close",
-            "shortcuts": "Super is the Windows key. Esc · Close"}[self.panel], "abide-muted")
+        # Errors are visible when something needs attention; no permanent tips.
+        self.status = label("", "abide-error")
         self.status.set_line_wrap(True)
+        self.status.set_no_show_all(True)
         body.pack_end(self.status, False, False, 0)
         if self.panel == "journal":
             self.load_day()
-        elif self.panel == "menu":
-            self.sync_quiet()
-            self.quiet_timer = GLib.timeout_add_seconds(2, self.sync_quiet)
+        self.cached_window = window
+        return window
+
+    def present_window(self, window):
+        self.focus_seen = False
         window.show_all()
+        root = Gdk.get_default_root_window()
+        root.set_events(root.get_events() | Gdk.EventMask.PROPERTY_CHANGE_MASK)
+        window.present_with_time(GdkX11.x11_get_server_time(root))
         if self.panel == "shortcuts":
             self.shortcut_search.grab_focus()
         elif self.panel == "journal":
             self.editor.grab_focus()
+        else:
+            self.menu_search.grab_focus()
+
+    def show_error(self, message):
+        self.status.set_text(message)
+        self.status.show()
 
     def launch(self, button, command):
         window = button.get_toplevel()
+        if shutil.which(command[0]) is None:
+            self.show_error(f"{button.get_tooltip_text()} is not installed. Install {command[0]} to use it.")
+            return
         terminal = command[0] == "xfce4-terminal" or (
             command[0] == "exo-open" and "TerminalEmulator" in command)
         screen = Wnck.Screen.get_default() if terminal else None
@@ -191,9 +245,8 @@ class Guide(Gtk.Application):
                 Gio.AppInfoCreateFlags.SUPPORTS_STARTUP_NOTIFICATION)
             if not app.launch([], context):
                 raise OSError("The application did not launch")
-            self.status.set_text("Opened " + button.get_tooltip_text().split(" · ")[0] + ".")
         except (OSError, GLib.Error) as error:
-            self.status.set_text("Could not open this app: " + str(error))
+            self.show_error("Could not open this app: " + str(error))
             return
         if screen:
             # Xfce Terminal can reuse its running server without activating its
@@ -220,81 +273,105 @@ class Guide(Gtk.Application):
         if time.monotonic() < deadline:
             return True
         self.launch_timer = 0
-        self.status.set_text("The terminal window did not appear. Try again or press Esc to close Abide.")
+        self.show_error("The terminal window did not appear. Try again or press Esc to close Abide.")
         return False
 
-    def app_button(self, title, key, icon, command):
-        button = Gtk.Button()
-        button.set_tooltip_text(title + (" · " + key if key else ""))
-        row = Gtk.Box(spacing=14)
-        row.set_border_width(12)
-        row.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.LARGE_TOOLBAR), False, False, 0)
-        texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
-        texts.pack_start(label(title), False, False, 0)
-        if key:
-            texts.pack_start(label(key, "abide-muted"), False, False, 0)
-        row.pack_start(texts, True, True, 0)
-        button.add(row)
-        button.connect("clicked", self.launch, command)
-        return button
-
     def open_page(self):
-        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
-        page.pack_start(label("YOUR APPS", "abide-section"), False, False, 0)
-        grid = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True)
-        self.launcher_grid = grid
-        for i, item in enumerate(LAUNCHERS):
-            grid.attach(self.app_button(*item), i % 3, i // 3, 1, 1)
-        page.pack_start(grid, False, False, 0)
-        page.pack_start(label("TOOLS & SETTINGS", "abide-section"), False, False, 0)
-        tools = Gtk.Grid(column_spacing=12, row_spacing=12, column_homogeneous=True)
-        for i, (title, icon, command) in enumerate(SETTINGS):
-            tools.attach(self.app_button(title, "", icon, command), i % 2, i // 2, 1, 1)
-        page.pack_start(tools, False, False, 0)
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.menu_route = "Abide"
+        self.menu_selections = {}
+        self.menu_search = Gtk.SearchEntry()
+        self.menu_search.set_width_chars(8)
+        self.menu_search.set_max_width_chars(8)
+        self.menu_search.get_style_context().add_class("abide-search")
+        self.menu_search.connect("changed", self.refresh_menu)
+        page.pack_start(self.menu_search, False, False, 0)
+        self.menu_list = Gtk.ListBox()
+        self.menu_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.menu_list.set_activate_on_single_click(True)
+        self.menu_list.connect("row-activated", self.activate_menu_row)
+        scroll = Gtk.ScrolledWindow()
+        self.menu_scroll = scroll
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_shadow_type(Gtk.ShadowType.NONE)
+        scroll.set_propagate_natural_width(True)
+        scroll.set_propagate_natural_height(True)
+        monitor = Gdk.Display.get_default().get_primary_monitor()
+        height = monitor.get_workarea().height if monitor else 800
+        scroll.set_max_content_height(max(160, height - 150))
+        scroll.add(self.menu_list)
+        page.pack_start(scroll, True, True, 0)
+        self.menu_empty = label("No matching actions.", "abide-muted")
+        self.menu_empty.set_no_show_all(True)
+        page.pack_start(self.menu_empty, False, False, 0)
+        self.refresh_menu()
         return page
+
+    def refresh_menu(self, *_):
+        query = self.menu_search.get_text().casefold().split()
+        for row in self.menu_list.get_children():
+            self.menu_list.remove(row)
+        self.menu_search.set_placeholder_text("Search " + self.menu_route + "…")
+        items = list(MENUS[self.menu_route])
+        if query and self.menu_route == "Abide":
+            items += [item for route, entries in MENUS.items() if route != "Abide" for item in entries]
+        elif self.menu_route != "Abide" and not query:
+            items.insert(0, ("Back", "go-previous-symbolic", "Abide"))
+        def searchable(item):
+            title, _icon, action = item
+            return (title + " " + " ".join(action if isinstance(action, list) else [])).casefold()
+        matches = [item for item in items if all(word in searchable(item) for word in query)]
+        for title, icon, action in matches:
+            row = Gtk.ListBoxRow()
+            row.action = action
+            row.set_tooltip_text(title)
+            row.get_style_context().add_class("abide-menu-row")
+            content = Gtk.Box(spacing=12)
+            content.set_border_width(8)
+            content.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.BUTTON), False, False, 0)
+            content.pack_start(label(title), True, True, 0)
+            if isinstance(action, str):
+                content.pack_end(label("›", "abide-muted"), False, False, 0)
+            row.add(content)
+            self.menu_list.add(row)
+        self.menu_list.show_all()
+        self.menu_empty.set_visible(not matches)
+        remembered = self.menu_selections.get(self.menu_route) if not query else None
+        selected = next((row for row in self.menu_list.get_children()
+                         if row.get_tooltip_text() == remembered), self.menu_list.get_row_at_index(0))
+        self.menu_list.select_row(selected)
+
+    def change_menu_route(self, route, selected=None):
+        selected = selected or self.menu_list.get_selected_row()
+        if selected:
+            self.menu_selections[self.menu_route] = selected.get_tooltip_text()
+        self.menu_route = route
+        self.menu_search.set_text("")
+        self.refresh_menu()
+        self.menu_search.grab_focus()
+
+    def activate_menu_row(self, _list, row):
+        if isinstance(row.action, str):
+            self.change_menu_route(row.action, row)
+        else:
+            self.launch(row, row.action)
 
     def reflect_page(self):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        scripture = Gtk.ComboBoxText()
-        self.scripture = scripture
-        for verse in VERSES:
-            scripture.append_text(verse["title"] + " · " + verse["reference"])
-        self.verse = label("")
-        self.verse.set_line_wrap(True)
-        self.verse.set_max_width_chars(70)
-        self.verse.set_selectable(True)
-        self.verse.get_style_context().add_class("abide-scripture")
-        self.verse_source = label("", "abide-muted")
-        def choose_verse(combo):
-            verse = VERSES[combo.get_active()]
-            self.verse.set_text(verse["text"])
-            self.verse_source.set_text("Scripture excerpts · " + verse.get("translation", "ESV"))
-        scripture.connect("changed", choose_verse)
-        scripture.set_active(date.today().toordinal() % len(VERSES))
-        page.pack_start(scripture, False, False, 0)
-        page.pack_start(self.verse, False, False, 0)
-        page.pack_start(self.verse_source, False, False, 0)
-        page.pack_start(Gtk.Separator(), False, False, 0)
         dates = Gtk.Box(spacing=12)
-        previous = Gtk.Button.new_from_icon_name("go-previous-symbolic", Gtk.IconSize.BUTTON)
-        previous.set_tooltip_text("Previous day")
-        previous.connect("clicked", lambda _: self.change_day(-1))
-        following = Gtk.Button.new_from_icon_name("go-next-symbolic", Gtk.IconSize.BUTTON)
-        following.set_tooltip_text("Next day")
-        following.connect("clicked", lambda _: self.change_day(1))
-        self.next_day = following
+        dates.pack_start(label("Journal", "abide-heading"), True, True, 0)
         self.date_label = label("")
-        today = Gtk.Button(label="Today")
-        today.connect("clicked", lambda _: self.change_day((date.today() - self.day).days))
-        dates.pack_start(previous, False, False, 0)
-        dates.pack_start(self.date_label, True, True, 0)
-        dates.pack_start(today, False, False, 0)
-        dates.pack_start(following, False, False, 0)
+        self.date_button = Gtk.MenuButton()
+        self.date_button.set_relief(Gtk.ReliefStyle.NONE)
+        self.date_button.add(self.date_label)
+        self.calendar = Gtk.Calendar()
+        self.calendar.connect("day-selected", self.on_date_selected)
+        self.date_popover = Gtk.Popover()
+        self.date_popover.add(self.calendar)
+        self.calendar.show_all()
+        self.date_button.set_popover(self.date_popover)
+        dates.pack_end(self.date_button, False, False, 0)
         page.pack_start(dates, False, False, 0)
-        page.pack_start(label("PRAYER & REFLECTION", "abide-section"), False, False, 0)
-        prompt = label("Give thanks. Bring what is weighing on you to God. Choose one act of love.", "abide-muted")
-        prompt.set_line_wrap(True)
-        page.pack_start(prompt, False, False, 0)
         self.editor = Gtk.TextView()
         self.editor.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self.editor.set_left_margin(14)
@@ -303,13 +380,28 @@ class Guide(Gtk.Application):
         self.editor.set_bottom_margin(12)
         self.editor.get_buffer().connect("changed", self.on_edit)
         scroll = Gtk.ScrolledWindow()
-        scroll.set_shadow_type(Gtk.ShadowType.IN)
+        scroll.set_shadow_type(Gtk.ShadowType.NONE)
         scroll.set_min_content_height(130)
         scroll.add(self.editor)
         page.pack_start(scroll, True, True, 0)
-        self.save_status = label("Saved on this computer.", "abide-muted")
-        page.pack_start(self.save_status, False, False, 0)
         return page
+
+    def on_date_selected(self, calendar):
+        if self.syncing_date:
+            return
+        year, month, day = calendar.get_date()
+        target = min(date.today(), date(year, month + 1, day))
+        self.change_day((target - self.day).days)
+        self.sync_calendar()
+        self.date_popover.popdown()
+
+    def sync_calendar(self):
+        self.syncing_date = True
+        try:
+            self.calendar.select_month(self.day.month - 1, self.day.year)
+            self.calendar.select_day(self.day.day)
+        finally:
+            self.syncing_date = False
 
     def shortcuts_page(self):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -322,22 +414,30 @@ class Guide(Gtk.Application):
         self.shortcut_list = Gtk.ListBox()
         self.shortcut_list.set_selection_mode(Gtk.SelectionMode.NONE)
         self.shortcut_list.set_filter_func(self.shortcut_matches)
-        rows = [("Abide menu", "Super + Space"), ("Journal", "Super + J"),
-                ("Shortcuts", "Super + K")]
-        rows += [(title, keys) for title, keys, _icon, _command in LAUNCHERS if keys] + [
-            ("Quiet mode", "Super + Q"), ("Search shortcuts", "Ctrl + F"),
-            ("Close Abide panel", "Esc"), ("Run a command", "Super + R"),
-            ("Faith / Hope / Love", "Super + 1 / 2 / 3"),
-            ("Move window there", "Super + Shift + 1–3"),
-            ("Tile left / right", "Super + ← / →"),
-            ("Maximize / restore", "Super + ↑"),
-            ("Show the background", "Super + D"), ("Lock", "Super + L"),
-            ("Switch windows", "Alt + Tab"), ("Previous window", "Alt + Shift + Tab"),
-            ("Close window", "Alt + F4"),
-            ("Screenshot", "Print"), ("Select a screenshot area", "Shift + Print"),
-            ("Screenshot this window", "Alt + Print"),
-        ]
-        for description, keys in rows:
+        scroll = Gtk.ScrolledWindow()
+        self.shortcut_scroll = scroll
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_shadow_type(Gtk.ShadowType.NONE)
+        scroll.set_min_content_height(360)
+        scroll.add(self.shortcut_list)
+        page.pack_start(scroll, True, True, 0)
+        self.shortcut_empty = label("No shortcuts match your search.", "abide-muted")
+        self.shortcut_empty.set_no_show_all(True)
+        page.pack_start(self.shortcut_empty, False, False, 0)
+        self.launchers, self.config_error = load_launchers(ROOT / "launchers.json", DEFAULT_LAUNCHERS)
+        self.populate_shortcuts()
+        return page
+
+    def reload_shortcuts(self):
+        launchers, self.config_error = load_launchers(ROOT / "launchers.json", DEFAULT_LAUNCHERS)
+        if launchers != self.launchers:
+            self.launchers = launchers
+            self.populate_shortcuts()
+
+    def populate_shortcuts(self):
+        for row in self.shortcut_list.get_children():
+            row.destroy()
+        for description, keys in shortcut_rows(self.launchers):
             row = Gtk.ListBoxRow()
             row.set_activatable(False)
             row.set_selectable(False)
@@ -355,20 +455,12 @@ class Guide(Gtk.Application):
             key = label(keys, "abide-key")
             key.set_halign(Gtk.Align.END)
             key.set_xalign(1)
-            key.set_size_request(280, -1)
+            key.set_size_request(360, -1)
             content.pack_end(key, False, False, 0)
             row.add(content)
             self.shortcut_list.add(row)
-        scroll = Gtk.ScrolledWindow()
-        self.shortcut_scroll = scroll
-        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroll.set_min_content_height(360)
-        scroll.add(self.shortcut_list)
-        page.pack_start(scroll, True, True, 0)
-        self.shortcut_empty = label("No shortcuts match your search.", "abide-muted")
-        self.shortcut_empty.set_no_show_all(True)
-        page.pack_start(self.shortcut_empty, False, False, 0)
-        return page
+        self.shortcut_list.show_all()
+        self.filter_shortcuts()
 
     def shortcut_matches(self, row):
         query = self.shortcut_search.get_text().casefold().replace("+", " ")
@@ -385,13 +477,15 @@ class Guide(Gtk.Application):
         if self.blur_timer:
             GLib.source_remove(self.blur_timer)
             self.blur_timer = 0
-        if window.is_active():
+        if not window.get_visible():
+            self.focus_seen = False
+        elif window.is_active():
             self.focus_seen = True
         elif self.focus_seen:
             self.blur_timer = GLib.timeout_add(150, self.close_if_inactive, window)
 
     def close_if_inactive(self, window):
-        # A Scripture chooser or context menu can briefly own the GTK grab.
+        # A date picker or context menu can briefly own the GTK grab.
         if not window.is_active() and Gtk.grab_get_current() is not None:
             return True
         if not window.is_active() and isinstance(window.get_window(), GdkX11.X11Window):
@@ -407,7 +501,6 @@ class Guide(Gtk.Application):
         if not window.is_active():
             window.close()
             if self.dirty:
-                self.status.set_text("Abide stayed open because your journal could not be saved.")
                 window.present()
         return False
 
@@ -415,7 +508,7 @@ class Guide(Gtk.Application):
         self.dirty = True
         if self.save_timer:
             GLib.source_remove(self.save_timer)
-        self.save_status.set_text("Saving…")
+        self.status.hide()
         self.save_timer = GLib.timeout_add(600, self.save)
 
     def save(self):
@@ -436,9 +529,9 @@ class Guide(Gtk.Application):
                 os.fsync(output.fileno())
             os.replace(temporary, path)
             self.dirty = False
-            self.save_status.set_text("Saved on this computer.")
+            self.status.hide()
         except OSError as error:
-            self.save_status.set_text("Could not save: " + str(error))
+            self.show_error("Could not save: " + str(error))
         return False
 
     def load_day(self):
@@ -449,16 +542,16 @@ class Guide(Gtk.Application):
         try:
             text = path.read_text() if path.exists() else ""
         except OSError as error:
-            self.save_status.set_text("Could not open this entry: " + str(error))
+            self.show_error("Could not open this entry: " + str(error))
             return False
         self.editor.get_buffer().set_text(text)
         if self.save_timer:
             GLib.source_remove(self.save_timer)
             self.save_timer = 0
         self.dirty = False
-        self.date_label.set_text(self.day.strftime("%A, %B %d, %Y"))
-        self.next_day.set_sensitive(self.day < date.today())
-        self.save_status.set_text("Saved on this computer." if path.exists() else "Write here. Your entry saves automatically.")
+        self.date_label.set_text(self.day.strftime("%a, %b %d, %Y"))
+        self.sync_calendar()
+        self.status.hide()
         return True
 
     def change_day(self, offset):
@@ -473,54 +566,142 @@ class Guide(Gtk.Application):
         if not self.load_day():
             self.day = old_day
 
-    def sync_quiet(self):
-        try:
-            result = subprocess.run([QUIET, "--status"], capture_output=True, text=True, check=True, timeout=3)
-            self.syncing_quiet = True
-            self.quiet.set_active(result.stdout.strip() == "true")
-            self.quiet.set_sensitive(True)
-        except (OSError, subprocess.SubprocessError):
-            self.quiet.set_sensitive(False)
-        finally:
-            self.syncing_quiet = False
-        return True
-
-    def on_quiet(self, button):
-        if self.syncing_quiet:
-            return
-        try:
-            subprocess.run([QUIET, "--on" if button.get_active() else "--off"], check=True,
-                           capture_output=True, timeout=3)
-            self.status.set_text("Quiet mode on." if button.get_active() else "Quiet mode off.")
-        except (OSError, subprocess.SubprocessError):
-            self.status.set_text("Could not change notification settings.")
-            self.sync_quiet()
-
-    def on_close(self, _window, _event):
+    def on_close(self, window, _event):
         if self.save_timer:
             GLib.source_remove(self.save_timer)
             self.save_timer = 0
         self.save()
+        if self.reuse_windows and not self.dirty:
+            self.clear_timers()
+            self.focus_seen = False
+            window.hide()
+            return True
         return self.dirty
 
     def on_destroy(self, _window):
-        for timer in (self.save_timer, self.quiet_timer, self.blur_timer, self.launch_timer):
+        self.cached_window = None
+        self.clear_timers()
+
+    def clear_timers(self):
+        for timer in (self.save_timer, self.blur_timer, self.launch_timer):
             if timer:
                 GLib.source_remove(timer)
-        self.save_timer = self.quiet_timer = self.blur_timer = self.launch_timer = 0
+        self.save_timer = self.blur_timer = self.launch_timer = 0
 
     def on_key(self, window, event):
-        if self.panel == "shortcuts" and event.state & Gdk.ModifierType.CONTROL_MASK and event.keyval in (Gdk.KEY_f, Gdk.KEY_F):
-            self.shortcut_search.grab_focus()
-            self.shortcut_search.select_region(0, -1)
+        if self.panel in ("menu", "shortcuts") and event.state & Gdk.ModifierType.CONTROL_MASK and event.keyval in (Gdk.KEY_f, Gdk.KEY_F):
+            search = self.menu_search if self.panel == "menu" else self.shortcut_search
+            search.grab_focus()
+            search.select_region(0, -1)
             return True
+        if self.panel == "menu":
+            if event.keyval in (Gdk.KEY_Up, Gdk.KEY_Down):
+                current = self.menu_list.get_selected_row()
+                step = 1 if event.keyval == Gdk.KEY_Down else -1
+                index = current.get_index() if current else -1
+                target = self.menu_list.get_row_at_index(max(0, index + step))
+                if target:
+                    self.menu_list.select_row(target)
+                    target.grab_focus()
+                    self.menu_search.grab_focus()
+                return True
+            if event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+                row = self.menu_list.get_selected_row()
+                if row:
+                    self.activate_menu_row(self.menu_list, row)
+                return True
+            if self.menu_route != "Abide" and (event.keyval == Gdk.KEY_Escape or (
+                    event.keyval == Gdk.KEY_BackSpace and not self.menu_search.get_text())):
+                self.change_menu_route("Abide")
+                return True
         if event.keyval == Gdk.KEY_Escape:
             window.close()
             return True
         return False
 
 
+class Guide(Gtk.Application, Panel):
+    """Standalone fallback for sessions without the resident service."""
+
+    def __init__(self, panel="menu"):
+        Gtk.Application.__init__(self, application_id="local.abide." + panel.capitalize(),
+                                 flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+        Panel.__init__(self, panel, self, reuse_windows=False)
+
+    def do_activate(self):
+        Panel.do_activate(self)
+
+    def do_command_line(self, command_line):
+        window = self.get_active_window()
+        if "--toggle" in command_line.get_arguments() and window and window.is_active():
+            window.close()
+        else:
+            self.activate()
+        return 0
+
+
+class Panels(Gtk.Application):
+    """One resident process serves lightweight hotkey requests for all panels."""
+
+    def __init__(self):
+        super().__init__(application_id="local.abide.Panels", flags=Gio.ApplicationFlags.IS_SERVICE)
+        self.guides = {}
+        for name, callback in (("show", self.on_show), ("toggle", self.on_toggle)):
+            action = Gio.SimpleAction.new(name, GLib.VariantType.new("s"))
+            action.connect("activate", callback)
+            self.add_action(action)
+        stop = Gio.SimpleAction.new("stop", None)
+        stop.connect("activate", self.on_stop)
+        self.add_action(stop)
+
+    def do_startup(self):
+        Gtk.Application.do_startup(self)
+        self.hold()
+        GLib.idle_add(self.prewarm)
+
+    def guide(self, panel):
+        if panel not in ("menu", "journal", "shortcuts"):
+            raise ValueError("Unknown panel: " + panel)
+        if panel not in self.guides:
+            guide = Panel(panel, self)
+            self.guides[panel] = guide
+        return self.guides[panel]
+
+    def prewarm(self):
+        # Build controls without mapping windows or reading journal entries.
+        for panel in ("menu", "shortcuts"):
+            guide = self.guide(panel)
+            if guide.cached_window is None:
+                guide.build_window()
+        return False
+
+    def on_show(self, _action, parameter):
+        self.guide(parameter.get_string()).activate()
+
+    def on_toggle(self, _action, parameter):
+        guide = self.guide(parameter.get_string())
+        window = guide.cached_window
+        if window and window.get_visible() and window.is_active():
+            window.close()
+        else:
+            guide.activate()
+
+    def on_stop(self, _action, _parameter):
+        for guide in self.guides.values():
+            if guide.cached_window:
+                guide.on_close(guide.cached_window, None)
+            if guide.dirty:
+                guide.cached_window.present()
+                return
+        for guide in self.guides.values():
+            for window in list(guide.get_windows()):
+                window.destroy()
+        self.quit()
+
+
 if __name__ == "__main__":
+    if "--service" in sys.argv:
+        raise SystemExit(Panels().run([sys.argv[0]]))
     if "--terminal" in sys.argv:
         raise SystemExit(open_terminal())
     panel = "shortcuts" if "--shortcuts" in sys.argv else "journal" if any(

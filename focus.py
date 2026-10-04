@@ -36,17 +36,20 @@ class NewWindowFocus:
         xid = window.get_xid()
         if xid not in self.pending:
             # Allow the window manager to finish mapping and reading hints.
-            self.pending[xid] = GLib.idle_add(self.focus_window, window)
+            self.pending[xid] = GLib.idle_add(self.focus_window, xid)
 
     def on_closed(self, screen, window):
         source = self.pending.pop(window.get_xid(), None)
         if source:
             GLib.source_remove(source)
 
-    def focus_window(self, window):
-        self.pending.pop(window.get_xid(), None)
+    def focus_window(self, xid):
+        self.pending.pop(xid, None)
         self.screen.force_update()
-        if window not in self.screen.get_windows() or not self.eligible(window):
+        # Resolve at dispatch time: a window may close before the idle runs.
+        # Older libwnck releases also cannot safely retain closed windows.
+        window = next((item for item in self.screen.get_windows() if item.get_xid() == xid), None)
+        if window is None or not self.eligible(window):
             return False
         active = self.screen.get_active_window()
         if active is None or active.get_xid() != window.get_xid():

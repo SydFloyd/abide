@@ -1,0 +1,28 @@
+name: Debian desktop checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        debian: [bookworm, trixie]
+    container: debian:${{ matrix.debian }}
+    steps:
+      - name: Install Debian test dependencies
+        run: |
+          apt-get update
+          apt-get install -y python3 python3-gi gir1.2-gtk-3.0 gir1.2-wnck-3.0 libglib2.0-bin xfconf exo-utils xfce4-terminal xfce4-settings xfce4-session xfce4-appfinder xfce4-taskmanager xfce4-screenshooter thunar mousepad git xvfb xauth xfwm4 desktop-file-utils libxtst6
+          useradd --create-home abide-ci
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Unit, GUI, fresh install, update, and undo checks
+        run: |
+          runuser -u abide-ci -- tests/run_desktop.sh

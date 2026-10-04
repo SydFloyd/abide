@@ -35,12 +35,12 @@ class FocusPolicyTests(unittest.TestCase):
 
     def test_new_window_uses_fresh_server_time_once(self):
         with patch.object(focus.GdkX11, "x11_get_server_time", return_value=1234):
-            self.assertFalse(self.watcher.focus_window(self.window))
+            self.assertFalse(self.watcher.focus_window(42))
         self.window.activate.assert_called_once_with(1234)
 
     def test_already_focused_window_needs_no_activation(self):
         self.screen.get_active_window.return_value = self.window
-        self.watcher.focus_window(self.window)
+        self.watcher.focus_window(42)
         self.window.activate.assert_not_called()
 
     def test_dialogs_can_focus_without_a_task_list_entry(self):
@@ -68,15 +68,16 @@ class FocusPolicyTests(unittest.TestCase):
                 self.assertFalse(self.watcher.eligible(self.window))
                 method.return_value = original
         self.screen.get_windows.return_value = []
-        self.watcher.focus_window(self.window)
+        self.watcher.focus_window(42)
         self.window.activate.assert_not_called()
 
     def test_closing_before_activation_cancels_pending_focus(self):
-        with patch.object(focus.GLib, "idle_add", return_value=99), \
+        with patch.object(focus.GLib, "idle_add", return_value=99) as idle, \
                 patch.object(focus.GLib, "source_remove") as remove:
             self.watcher.on_opened(self.screen, self.window)
             self.watcher.on_opened(self.screen, self.window)
             self.watcher.on_closed(self.screen, self.window)
+        idle.assert_called_once_with(self.watcher.focus_window, 42)
         remove.assert_called_once_with(99)
         self.assertFalse(self.watcher.pending)
 
@@ -96,6 +97,8 @@ class FocusDesktopTests(unittest.TestCase):
         screen = focus.Wnck.Screen.get_default()
         screen.force_update()
         original = screen.get_active_window()
+        original_xid = original.get_xid() if original else None
+        del original
         first = focus.Gtk.Window(title="Abide focus verification · source")
         target = focus.Gtk.Window(title="Abide focus verification · stale timestamp")
         process = None
@@ -148,10 +151,12 @@ class FocusDesktopTests(unittest.TestCase):
                 target.destroy()
                 first.destroy()
                 self.pump(0.1)
-                if original is not None and focus.Wnck.Window.get(original.get_xid()) is not None:
+                original = focus.Wnck.Window.get(original_xid) if original_xid is not None else None
+                if original is not None:
                     root = focus.Gdk.get_default_root_window()
                     root.set_events(root.get_events() | focus.Gdk.EventMask.PROPERTY_CHANGE_MASK)
                     original.activate(focus.GdkX11.x11_get_server_time(root))
+                    del original
                     self.pump(0.05)
         self.assertEqual(process.returncode, 0, (stdout + stderr).decode())
         self.assertEqual(subprocess.run([sys.executable, str(ROOT / "focus.py"), "--status"],
