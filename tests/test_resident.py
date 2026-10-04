@@ -196,11 +196,12 @@ class ResidentTests(unittest.TestCase):
         def wait_active(title):
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline:
+                window = None
                 self.pump(0.02)
                 screen.force_update()
                 window = screen.get_active_window()
                 if window and window.get_name() == title:
-                    return window
+                    return window.get_xid()
             self.fail("Panel did not become active: " + title + "; windows="
                       + repr([(window.get_name(), window.is_active()) for window in screen.get_windows()]))
         try:
@@ -213,17 +214,18 @@ class ResidentTests(unittest.TestCase):
                                          ("journal", "--journal", "Abide Journal")):
                 with self.subTest(panel=panel):
                     subprocess.run(["sh", str(ROOT / "launcher.sh"), option], check=True, env=env, timeout=3)
-                    window = wait_active(title)
-                    xid = window.get_xid()
+                    xid = wait_active(title)
                     if panel == "menu":
                         subprocess.run(["sh", str(ROOT / "launcher.sh"), "--toggle"], check=True, env=env, timeout=3)
                     else:
+                        window = self.ui.Wnck.Window.get(xid)
                         window.close(self.ui.Gdk.Display.get_default().get_user_time())
+                        del window
                     self.pump(0.2)
                     screen.force_update()
                     self.assertTrue(owned(), "Closing a panel stopped the service")
                     subprocess.run(["sh", str(ROOT / "launcher.sh"), option], check=True, env=env, timeout=3)
-                    self.assertEqual(wait_active(title).get_xid(), xid)
+                    self.assertEqual(wait_active(title), xid)
             subprocess.run(["gapplication", "action", "local.abide.Panels", "stop"], check=True, timeout=3)
             stdout, stderr = process.communicate(timeout=5)
             self.assertEqual(process.returncode, 0, (stdout + stderr).decode())

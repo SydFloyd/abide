@@ -412,8 +412,11 @@ class PanelTests(unittest.TestCase):
         screen = self.ui.Wnck.Screen.get_default()
         screen.force_update()
         existing = {window.get_xid() for window in screen.get_windows()}
-        new = []
+        terminal_xid = None
         process = None
+        def active_xid():
+            active = screen.get_active_window()
+            return active.get_xid() if active else None
         try:
             process = launch()
             deadline = time.monotonic() + 4
@@ -421,19 +424,21 @@ class PanelTests(unittest.TestCase):
                 self.pump(0.05)
                 terminal = self.ui.new_terminal(screen, existing)
                 if terminal:
-                    new = [terminal]
-                    active = screen.get_active_window()
-                    if active and active.get_xid() == terminal.get_xid() and not self.app.get_windows():
-                        break
-            self.assertTrue(new, "The preferred terminal should open a new window")
-            self.assertEqual(screen.get_active_window().get_xid(), new[0].get_xid())
+                    terminal_xid = terminal.get_xid()
+                del terminal
+                if terminal_xid and active_xid() == terminal_xid and not self.app.get_windows():
+                    break
+            self.assertTrue(terminal_xid, "The preferred terminal should open a new window")
+            self.assertEqual(active_xid(), terminal_xid)
             self.assertEqual(self.app.get_windows(), [])
             self.assertEqual(self.app.launch_timer, 0)
             if process:
                 self.assertEqual(process.wait(timeout=2), 0)
         finally:
-            for terminal in new:
+            terminal = self.ui.Wnck.Window.get(terminal_xid) if terminal_xid else None
+            if terminal is not None:
                 terminal.close(self.ui.Gdk.Display.get_default().get_user_time())
+            del terminal
             if process and process.poll() is None:
                 process.terminate()
                 process.wait(timeout=2)

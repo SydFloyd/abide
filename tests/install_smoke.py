@@ -90,6 +90,7 @@ def main():
             context = GLib.MainContext.default()
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
+                active = None
                 while context.pending():
                     context.iteration(False)
                 screen.force_update()
@@ -125,6 +126,7 @@ def main():
             context = GLib.MainContext.default()
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
+                active = None
                 while context.pending():
                     context.iteration(False)
                 screen.force_update()
@@ -132,6 +134,7 @@ def main():
                 if active and active.get_name() == "Abide updates":
                     assert active.is_above()
                     active.close(0)
+                    del active
                     break
                 time.sleep(0.01)
             else:
