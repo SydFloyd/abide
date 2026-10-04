@@ -1,32 +1,32 @@
-.abide-guide { background-color: #151514; color: #d8d8d2; }
+.abide-guide { background-color: #151514; color: #d8d8d2; border: none; box-shadow: none; }
+.abide-guide decoration { border: none; box-shadow: none; }
+.abide-guide.abide-shortcuts { font-size: 14pt; }
 .abide-guide .abide-heading {
   font-family: "DejaVu Sans Mono";
-  font-size: 21pt;
-  letter-spacing: 3px;
+  font-size: 17pt;
   color: #e0ded1;
 }
 .abide-guide .abide-muted { color: #aaa99f; }
-.abide-guide .abide-section {
-  font-family: "DejaVu Sans Mono";
-  font-size: 9pt;
-  letter-spacing: 2px;
-  color: #bcb69a;
-}
+.abide-guide .abide-error { color: #dfa59b; }
 .abide-guide .abide-search { min-height: 30px; padding: 7px 12px; }
-.abide-guide list { background-color: #181817; }
+.abide-guide list { background-color: #151514; border: none; }
+.abide-guide scrolledwindow { border: none; box-shadow: none; }
+.abide-guide .abide-menu-row { min-height: 40px; border: none; }
+.abide-guide .abide-menu-row:selected { background-color: #34352d; }
 .abide-guide .abide-shortcut-row {
   min-height: 30px;
-  border-bottom: 1px solid #30302b;
+  border: none;
 }
 .abide-guide .abide-shortcut-row:nth-child(even) { background-color: #1d1d1a; }
 .abide-guide .abide-key {
   font-family: "DejaVu Sans Mono";
-  font-size: 10pt;
+  font-size: inherit;
   color: #e0ded1;
-  background-color: #262620;
-  border: 1px solid #424239;
-  border-radius: 4px;
-  padding: 7px 12px;
+  background-color: transparent;
+  background-image: none;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
 }
-.abide-guide .abide-scripture { font-size: 12pt; color: #e0ded1; }
 .abide-guide textview, .abide-guide textview text { background-color: #10100f; color: #d8d8d2; }

@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -23,12 +24,15 @@ def module(name, filename):
 class InstallationTests(unittest.TestCase):
     def test_requested_bindings_and_removed_old_bindings(self):
         installer = module("abide_install", "install.py")
-        self.assertTrue(installer.KEYS["<Super>space"].endswith("abide-guide --toggle"))
+        self.assertEqual(shlex.split(installer.KEYS["<Super>space"]), [str(installer.BIN / "abide-guide"), "--toggle"])
         self.assertTrue(installer.KEYS["<Super>j"].endswith("--journal"))
         self.assertTrue(installer.KEYS["<Super>k"].endswith("--shortcuts"))
         self.assertTrue(installer.KEYS["<Super>Return"].endswith("--terminal"))
         self.assertIsNone(installer.KEYS["<Super>slash"])
         self.assertIsNone(installer.KEYS["<Super>t"])
+        self.assertIsNone(installer.KEYS["<Super>q"])
+        self.assertEqual(installer.KEYS["<Shift><Super>f"], "thunar")
+        self.assertEqual(installer.WINDOW_KEYS["<Super>f"], "fullscreen_key")
 
     def test_install_preserves_private_data(self):
         installer = module("abide_private_install", "install.py")
@@ -49,18 +53,27 @@ class InstallationTests(unittest.TestCase):
             self.assertEqual((data / "journal/2026-01-01.txt").read_text(), secret)
             self.assertIn(home / ".local/bin/abide-focus", files)
             self.assertIn(home / ".config/autostart/abide-focus.desktop", files)
+            self.assertIn(home / ".local/bin/abide-panels", files)
+            self.assertIn(home / ".config/autostart/abide-panels.desktop", files)
+            self.assertIn(home / ".local/share/dbus-1/services/local.abide.Panels.service", files)
 
     def test_undo_stops_focus_and_preserves_previous_service_state(self):
         installer = module("abide_undo_install", "install.py")
         snapshot = {"shortcuts": {}, "files": {}, "focus_listener": False}
         with patch.object(installer, "stop_focus") as stop, patch.object(installer, "start_focus") as start, \
+                patch.object(installer, "stop_panels") as stop_panels, \
+                patch.object(installer, "start_panels") as start_panels, \
                 patch.object(installer.Path, "exists", return_value=True):
             installer.restore(Path("unused-backup"), snapshot)
             stop.assert_called_once()
             start.assert_not_called()
+            stop_panels.assert_called_once()
+            start_panels.assert_not_called()
             snapshot["focus_listener"] = True
+            snapshot["panels_running"] = True
             installer.restore(Path("unused-backup"), snapshot)
             start.assert_called_once()
+            start_panels.assert_called_once()
 
     def test_failed_focus_start_restores_installation(self):
         installer = module("abide_rollback_install", "install.py")
@@ -74,14 +87,48 @@ class InstallationTests(unittest.TestCase):
                     patch.object(installer, "BIN", home / ".local/bin"), \
                     patch.object(installer, "LEGACY_AUTOSTART", home / ".config/autostart/legacy.desktop"), \
                     patch.object(installer, "targets", return_value={target: b"NEW_SOURCE"}), \
+                    patch.object(installer, "check_environment", return_value=[]), \
+                    patch.object(installer, "window_bindings", return_value=installer.WINDOW_KEYS), \
                     patch.object(installer, "xfconf", return_value=None), \
                     patch.object(installer, "focus_running", return_value=False), \
+                    patch.object(installer, "panels_running", return_value=False), \
+                    patch.object(installer, "stop_panels"), \
                     patch.object(installer, "stop_focus"), \
                     patch.object(installer, "start_focus", side_effect=RuntimeError("Service unavailable")), \
                     patch.object(sys, "argv", ["install.py"]):
                 with self.assertRaisesRegex(RuntimeError, "Service unavailable"):
                     installer.main()
             self.assertEqual(target.read_bytes(), b"PREVIOUS_SOURCE")
+            self.assertFalse((state / "latest-panels-install").exists())
+
+    def test_failed_panels_start_restores_installation(self):
+        installer = module("abide_panels_rollback_install", "install.py")
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            state = home / ".local/state/abide"
+            target = home / ".local/bin/abide-guide"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"PREVIOUS_LAUNCHER")
+            (target.parent / "abide-focus").write_bytes(b"PREVIOUS_FOCUS_HELPER")
+            autostart = home / ".config/autostart/abide-panels.desktop"
+            with patch.object(installer, "HOME", home), patch.object(installer, "STATE", state), \
+                    patch.object(installer, "BIN", home / ".local/bin"), \
+                    patch.object(installer, "LEGACY_AUTOSTART", home / ".config/autostart/legacy.desktop"), \
+                    patch.object(installer, "targets", return_value={target: b"NEW_LAUNCHER", autostart: b"NEW_SERVICE"}), \
+                    patch.object(installer, "check_environment", return_value=[]), \
+                    patch.object(installer, "window_bindings", return_value=installer.WINDOW_KEYS), \
+                    patch.object(installer, "xfconf", return_value=None), \
+                    patch.object(installer, "focus_running", return_value=True), \
+                    patch.object(installer, "panels_running", return_value=False), \
+                    patch.object(installer, "stop_panels"), patch.object(installer, "stop_focus"), \
+                    patch.object(installer, "start_focus") as start_focus, \
+                    patch.object(installer, "start_panels", side_effect=RuntimeError("Panels unavailable")), \
+                    patch.object(sys, "argv", ["install.py"]):
+                with self.assertRaisesRegex(RuntimeError, "Panels unavailable"):
+                    installer.main()
+                self.assertEqual(start_focus.call_count, 2)
+            self.assertEqual(target.read_bytes(), b"PREVIOUS_LAUNCHER")
+            self.assertFalse(autostart.exists())
             self.assertFalse((state / "latest-panels-install").exists())
 
 
@@ -92,7 +139,8 @@ class PanelTests(unittest.TestCase):
         "test_shortcuts_layout_and_keyboard_search": "shortcuts",
         "test_journal_focus_loss_saves_before_closing": "journal",
         "test_failed_save_protects_journal": "journal",
-        "test_scripture_popup_retains_journal": "journal",
+        "test_date_popup_retains_journal": "journal",
+        "test_date_selection_saves_and_reloads_entries": "journal",
         "test_terminal_shortcut_closes_journal_and_focuses_terminal": "journal",
     }
 
@@ -116,8 +164,8 @@ class PanelTests(unittest.TestCase):
             time.sleep(0.005)
 
     def open_panel(self, panel):
-        # Production runs one application per panel/process. Reuse one GTK
-        # registration in this test process while building each panel's UI.
+        # Exercise the standalone fallback with one GTK registration while
+        # building each panel's UI. The resident service has its own tests.
         self.app = self.application
         self.app.panel = panel
         self.app.activate()
@@ -130,12 +178,12 @@ class PanelTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="abide-verification-")
         self.addCleanup(self.temporary.cleanup)
+        root_patch = patch.object(self.ui, "ROOT", Path(self.temporary.name))
+        root_patch.start()
+        self.addCleanup(root_patch.stop)
         self.journal_patch = patch.object(self.ui, "JOURNAL", Path(self.temporary.name) / "journal")
         self.journal_patch.start()
         self.addCleanup(self.journal_patch.stop)
-        self.quiet_patch = patch.object(self.ui.Guide, "sync_quiet", lambda _self: True)
-        self.quiet_patch.start()
-        self.addCleanup(self.quiet_patch.stop)
         self.open_panel(self.MODES.get(self._testMethodName, "menu"))
 
     def tearDown(self):
@@ -159,7 +207,70 @@ class PanelTests(unittest.TestCase):
             self.assertFalse(hasattr(self.app, "stack"))
             tree = list(widgets(self.app.page))
             self.assertEqual(any(isinstance(widget, self.ui.Gtk.TextView) for widget in tree), panel == "journal")
-            self.assertEqual(any(isinstance(widget, self.ui.Gtk.SearchEntry) for widget in tree), panel == "shortcuts")
+            self.assertEqual(any(isinstance(widget, self.ui.Gtk.SearchEntry) for widget in tree), panel != "journal")
+            self.assertFalse(self.window.get_decorated())
+            self.assertFalse(self.window.get_resizable())
+            self.assertTrue(self.window.get_window().get_state() & self.ui.Gdk.WindowState.ABOVE)
+            self.assertFalse(self.app.status.get_visible())
+            texts = [widget.get_text() for widget in tree if isinstance(widget, self.ui.Gtk.Label)]
+            self.assertNotIn("Faith · Hope · Love", texts)
+            self.assertNotIn("SHORTCUTS", texts)
+            self.assertFalse(any("Quiet mode" in text or "Esc ·" in text for text in texts))
+            if panel == "journal":
+                self.assertEqual(len(self.app.page.get_children()), 2)
+                self.assertIn("Journal", texts)
+                self.assertFalse(self.app.date_popover.get_visible())
+
+    def menu_key(self, keyval):
+        event = self.ui.Gdk.Event.new(self.ui.Gdk.EventType.KEY_PRESS)
+        event.keyval = keyval
+        event.state = 0
+        return self.app.on_key(self.window, event)
+
+    def test_menu_search_finds_nested_actions_and_enter_launches(self):
+        self.app.menu_search.set_text("display")
+        self.pump(0.05)
+        rows = self.app.menu_list.get_children()
+        self.assertEqual([row.get_tooltip_text() for row in rows], ["Display"])
+        with patch.object(self.app, "launch") as launch:
+            self.assertTrue(self.menu_key(self.ui.Gdk.KEY_Return))
+            launch.assert_called_once_with(rows[0], ["xfce4-display-settings"])
+        self.app.menu_search.set_text("no_such_menu_action")
+        self.assertTrue(self.app.menu_empty.get_visible())
+        self.menu_key(self.ui.Gdk.KEY_Return)
+        self.app.menu_search.set_text("")
+        titles = [row.get_tooltip_text() for row in self.app.menu_list.get_children()]
+        self.assertNotIn("Terminal", titles)
+        self.assertNotIn("Browser", titles)
+        self.assertNotIn("Mousepad", titles)
+        self.assertFalse(self.app.menu_empty.get_visible())
+
+    def test_menu_keyboard_navigation_back_and_dismissal(self):
+        self.assertIs(self.window.get_focus(), self.app.menu_search)
+        self.menu_key(self.ui.Gdk.KEY_Down)
+        self.menu_key(self.ui.Gdk.KEY_Return)
+        self.assertEqual(self.app.menu_route, "Settings")
+        self.assertEqual(self.app.menu_list.get_row_at_index(0).get_tooltip_text(), "Back")
+        self.menu_key(self.ui.Gdk.KEY_Escape)
+        self.assertEqual(self.app.menu_route, "Abide")
+        self.assertEqual(self.app.menu_list.get_selected_row().get_tooltip_text(), "Settings")
+        self.assertEqual(self.app.get_windows(), [self.window])
+        for route, back in (("Capture", "click"), ("Session", "backspace"), ("Settings", "escape")):
+            with self.subTest(route=route, back=back):
+                self.app.menu_search.set_text(route.casefold())
+                self.menu_key(self.ui.Gdk.KEY_Return)
+                self.assertEqual(self.app.menu_route, route)
+                self.assertFalse(self.app.menu_search.get_text())
+                if back == "click":
+                    self.app.activate_menu_row(self.app.menu_list, self.app.menu_list.get_row_at_index(0))
+                else:
+                    self.menu_key(self.ui.Gdk.KEY_BackSpace if back == "backspace" else self.ui.Gdk.KEY_Escape)
+                self.assertEqual(self.app.menu_route, "Abide")
+                self.assertEqual(self.app.menu_list.get_selected_row().get_tooltip_text(), route)
+                self.assertIs(self.window.get_focus(), self.app.menu_search)
+        self.menu_key(self.ui.Gdk.KEY_Escape)
+        self.pump(0.05)
+        self.assertEqual(self.app.get_windows(), [])
 
     def search(self, text):
         self.app.shortcut_search.set_text(text)
@@ -169,8 +280,8 @@ class PanelTests(unittest.TestCase):
 
     def test_search_action_key_alias_and_empty_results(self):
         self.assertEqual(self.search("terminal"), ["Terminal"])
-        self.assertEqual(self.search("sUpEr + Return"), ["Terminal"])
-        self.assertEqual(self.search("Windows Enter"), ["Terminal"])
+        self.assertEqual(self.search("sUpEr + Return"), ["Terminal", "Browser"])
+        self.assertEqual(self.search("Windows Enter"), ["Terminal", "Browser"])
         self.assertEqual(self.search("journal"), ["Journal"])
         self.assertEqual(self.search("missing_unlikely_shortcut"), [])
         self.assertTrue(self.app.shortcut_empty.get_visible())
@@ -182,7 +293,7 @@ class PanelTests(unittest.TestCase):
         self.assertIs(self.window.get_focus(), self.app.shortcut_search)
         adjustment = self.app.shortcut_scroll.get_vadjustment()
         self.assertGreater(adjustment.get_upper(), adjustment.get_page_size())
-        self.assertGreaterEqual(self.window.get_size().width, 900)
+        self.assertGreaterEqual(self.window.get_size().width, 800)
         self.app.shortcut_search.set_text("Terminal")
         event = self.ui.Gdk.Event.new(self.ui.Gdk.EventType.KEY_PRESS)
         event.keyval = self.ui.Gdk.KEY_f
@@ -228,18 +339,47 @@ class PanelTests(unittest.TestCase):
             self.pump(0.05)
             self.assertEqual(self.app.get_windows(), [self.window])
             self.assertTrue(self.app.dirty)
-            self.assertIn("Verification save failure", self.app.save_status.get_text())
+            self.assertIn("Verification save failure", self.app.status.get_text())
+            self.assertTrue(self.app.status.get_visible())
+            day = self.app.day
+            self.app.change_day(-1)
+            self.assertEqual(self.app.day, day)
         self.window.close()
         self.pump(0.05)
         self.assertEqual(self.app.get_windows(), [])
 
-    def test_scripture_popup_retains_journal(self):
-        self.app.scripture.popup()
+    def test_date_popup_retains_journal(self):
+        self.app.date_button.set_active(True)
         self.pump(0.3)
         self.assertEqual(self.app.get_windows(), [self.window])
-        self.app.scripture.popdown()
+        self.app.date_popover.popdown()
         self.pump(0.25)
         self.assertEqual(self.app.get_windows(), [self.window])
+
+    def test_date_selection_saves_and_reloads_entries(self):
+        self.app.day = self.ui.date.today()
+        self.app.load_day()
+        today = self.app.day
+        self.app.editor.get_buffer().set_text("Entry saved before date change")
+        yesterday = today - self.ui.timedelta(days=1)
+        self.app.syncing_date = True
+        self.app.calendar.select_month(yesterday.month - 1, yesterday.year)
+        self.app.syncing_date = False
+        self.app.calendar.select_day(yesterday.day)
+        self.assertEqual(self.app.day, yesterday)
+        path = self.ui.JOURNAL / (today.isoformat() + ".txt")
+        self.assertEqual(path.read_text(), "Entry saved before date change")
+        self.app.change_day(1)
+        buffer = self.app.editor.get_buffer()
+        self.assertEqual(buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True),
+                         "Entry saved before date change")
+        self.assertFalse(self.app.status.get_visible())
+
+    def launch_button(self, title, command):
+        button = self.ui.Gtk.Button(label=title)
+        button.set_tooltip_text(title)
+        button.connect("clicked", self.app.launch, command)
+        return button
 
     def test_app_launch_has_activation_and_dismisses_menu(self):
         output = Path(self.temporary.name) / "result.json"
@@ -248,7 +388,7 @@ class PanelTests(unittest.TestCase):
                           "pathlib.Path(sys.argv[1]).write_text(json.dumps({"
                           "'startup': os.environ.get('DESKTOP_STARTUP_ID'), 'args': sys.argv[2:]}))\n")
         command = [sys.executable, str(script), str(output), "a value with spaces", "it's literal"]
-        button = self.app.app_button("Launch verification", "", "utilities-terminal-symbolic", command)
+        button = self.launch_button("Launch verification", command)
         self.app.page.pack_start(button, False, False, 0)
         button.show_all()
         button.clicked()
@@ -260,14 +400,13 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(launched["args"], ["a value with spaces", "it's literal"])
 
     def test_failed_app_launch_retains_menu(self):
-        button = self.app.app_button("Missing app", "", "utilities-terminal-symbolic",
-                                     ["/nonexistent/abide-verification"])
+        button = self.launch_button("Missing app", ["/nonexistent/abide-verification"])
         self.app.page.pack_start(button, False, False, 0)
         button.show_all()
         button.clicked()
         self.pump(0.1)
         self.assertEqual(self.app.get_windows(), [self.window])
-        self.assertIn("Could not open this app", self.app.status.get_text())
+        self.assertIn("is not installed", self.app.status.get_text())
 
     def check_terminal(self, launch):
         screen = self.ui.Wnck.Screen.get_default()
@@ -299,11 +438,6 @@ class PanelTests(unittest.TestCase):
                 process.terminate()
                 process.wait(timeout=2)
             self.pump(0.1)
-
-    def test_terminal_button_focuses_destination_and_closes_menu(self):
-        button = next(button for button in self.app.launcher_grid.get_children()
-                      if button.get_tooltip_text().startswith("Terminal ·"))
-        self.check_terminal(button.clicked)
 
     def test_terminal_shortcut_closes_journal_and_focuses_terminal(self):
         self.app.editor.get_buffer().set_text("Save before opening a terminal")
