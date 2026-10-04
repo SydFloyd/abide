@@ -24,13 +24,14 @@ class ConfigurationTests(unittest.TestCase):
             path = Path(folder) / "launchers.json"
             self.assertEqual(load_launchers(path, defaults), (defaults, None))
             for text in ("{", "null", "{}", '[1]', '[["Voice","V","icon",[]]]',
-                         '[["Voice","V","icon",[1]]]', " " * 262145):
+                         '[["Voice","V","icon",[1]]]', '[["Voice","V","icon",[""]]]',
+                         json.dumps([["Voice\0", "V", "icon", ["voice"]]]), " " * 262145):
                 with self.subTest(text=text[:30]):
                     path.write_text(text)
                     rows, error = load_launchers(path, defaults)
                     self.assertEqual(rows, defaults)
                     self.assertTrue(error)
-            valid = [["Voice", "Hold Super + V", "audio", ["voice", "listen"]]]
+            valid = [["Voice", "Hold Super + V", "audio", ["voice", "listen", "--label", ""]]]
             path.write_text(json.dumps(valid))
             self.assertEqual(load_launchers(path, defaults), (valid, None))
 
