@@ -22,7 +22,11 @@
 .abide-guide list { background-color: #151514; border: none; }
 .abide-guide list label, .abide-guide list image { color: #d8d8d2; }
 .abide-guide scrolledwindow { border: none; box-shadow: none; }
-.abide-guide .abide-menu-row { min-height: 40px; border: none; }
+.abide-guide .abide-menu-row {
+  min-height: 52px;
+  padding: 8px 20px;
+  border: none;
+}
 .abide-guide .abide-menu-row:selected { background-color: #34352d; }
 .abide-guide .abide-shortcut-row {
   min-height: 30px;
