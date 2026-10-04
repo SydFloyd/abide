@@ -18,6 +18,7 @@ class FocusPolicyTests(unittest.TestCase):
     def setUp(self):
         self.screen = Mock()
         self.root = Mock()
+        self.screen.get_windows.return_value = []
         self.watcher = focus.NewWindowFocus(self.screen, self.root)
         self.addCleanup(self.watcher.stop)
         self.window = Mock()

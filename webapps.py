@@ -29,6 +29,34 @@ WEB_APPS = (
     WebApp("x", "X", "https://x.com/", "applications-internet-symbolic", "Super + Shift + X", "<Shift><Super>x"),
     WebApp("gmail", "Gmail", "https://mail.google.com/", "mail-unread-symbolic", "Super + Shift + E", "<Shift><Super>e"),
 )
+WEB_APP_CLASSES = frozenset(app.window_class for app in WEB_APPS)
+
+
+def remove_frame(window):
+    """Remove the window manager's frame from Abide web apps only."""
+    if (window.get_class_group_name() or "").casefold() not in WEB_APP_CLASSES:
+        return False
+    import gi
+    gi.require_version("Gdk", "3.0")
+    gi.require_version("GdkX11", "3.0")
+    gi.require_version("Wnck", "3.0")
+    from gi.repository import Gdk, GdkX11, Wnck
+
+    if window.get_window_type() != Wnck.WindowType.NORMAL:
+        return False
+    display = Gdk.Display.get_default()
+    # The browser can close between libwnck's notification and this request.
+    display.error_trap_push()
+    try:
+        foreign = GdkX11.X11Window.foreign_new_for_display(display, window.get_xid())
+        if foreign is not None:
+            defined, decorations = foreign.get_decorations()
+            if not defined or decorations != Gdk.WMDecoration(0):
+                foreign.set_decorations(Gdk.WMDecoration(0))
+                display.flush()
+        return foreign is not None
+    finally:
+        display.error_trap_pop_ignored()
 
 
 def browser_command(app, home=None):
@@ -58,6 +86,7 @@ def focus_existing(app):
     for window in screen.get_windows():
         if (window.get_class_group_name() or "").casefold() != app.window_class:
             continue
+        remove_frame(window)
         root = Gdk.get_default_root_window()
         root.set_events(root.get_events() | Gdk.EventMask.PROPERTY_CHANGE_MASK)
         timestamp = GdkX11.x11_get_server_time(root)

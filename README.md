@@ -88,11 +88,12 @@ Screen recording is optional. Install it with `sudo apt install simplescreenreco
 the Capture menu already includes it. Missing optional applications show a
 message while leaving the menu usable.
 
-X and Gmail can run in their own Chromium app windows, without tabs or an
-address bar. Use `./setup.sh --webapps` to include Chromium, or install it later
-with `sudo apt install chromium chromium-sandbox`. Firefox remains your normal
-browser. Find X and Gmail under Apps or search for them in Abide; Super+Shift+X
-opens X and Super+Shift+E opens Gmail, following Omarchy's X/email bindings.
+X and Gmail run in borderless Chromium app windows, without tabs, an address
+bar, or title-bar controls. Use `./setup.sh --webapps` to include Chromium, or
+install it later with `sudo apt install chromium chromium-sandbox`. Firefox
+remains your normal browser. Find X and Gmail under Apps or search for them in
+Abide; Super+Shift+X opens X and Super+Shift+E opens Gmail, following Omarchy's
+X/email bindings.
 Repeating a shortcut focuses the existing app window, including on another
 workspace, rather than opening another copy. Super+W closes it normally.
 
