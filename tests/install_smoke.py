@@ -13,6 +13,8 @@ SOURCE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SOURCE))
 from release import CODE_FILES  # noqa: E402
 from updater import Updater  # noqa: E402
+from availability import command_available  # noqa: E402
+from webapps import WEB_APPS  # noqa: E402
 
 
 def run(*arguments, cwd=None):
@@ -58,8 +60,17 @@ def main():
         first_backup = (state / "latest-panels-install").read_text()
         assert "ready" in run(str(bin_dir / "abide"), "--doctor")
         assert "Usage:" in run(str(bin_dir / "abide"), "--help")
-        assert shlex.split(run("xfconf-query", "-c", "xfce4-keyboard-shortcuts", "-p", "/commands/custom/<Shift><Super>x")) == [str(bin_dir / "abide-webapp"), "x"]
-        assert shlex.split(run("xfconf-query", "-c", "xfce4-keyboard-shortcuts", "-p", "/commands/custom/<Shift><Super>e")) == [str(bin_dir / "abide-webapp"), "gmail"]
+        for app in WEB_APPS:
+            supported = command_available(app.command(bin_dir))
+            key = subprocess.run(["xfconf-query", "-c", "xfce4-keyboard-shortcuts", "-p",
+                                  "/commands/custom/" + app.accelerator],
+                                 capture_output=True, text=True, timeout=5)
+            if supported:
+                assert key.returncode == 0 and shlex.split(key.stdout) == app.command(bin_dir)
+            else:
+                assert key.returncode != 0, "A missing browser left an unusable web-app shortcut"
+            entry_text = (home / ".local/share/applications" / ("abide-webapp-" + app.identifier + ".desktop")).read_text()
+            assert ("NoDisplay=true" in entry_text) == (not supported)
         for desktop in (home / ".local/share/applications").glob("abide*.desktop"):
             run("desktop-file-validate", str(desktop))
         for desktop in (home / ".config/autostart").glob("abide*.desktop"):

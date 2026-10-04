@@ -335,9 +335,9 @@ class PanelTests(unittest.TestCase):
                     self.assertGreater(height, main.height)
                 elif route == "Abide":
                     self.assertEqual(height, main.height)
-        self.app.menu_search.set_text("simplescreenrecorder")
+        self.app.menu_search.set_text("check updates")
         self.pump(0.1)
-        self.assertEqual([row.get_tooltip_text() for row in self.app.menu_list.get_children()], ["Record screen"])
+        self.assertEqual([row.get_tooltip_text() for row in self.app.menu_list.get_children()], ["Check for updates"])
         self.assertLess(self.window.get_size().height, main.height)
 
     def test_update_row_and_dot_follow_cached_status_without_network(self):
