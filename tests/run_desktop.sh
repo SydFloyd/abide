@@ -52,7 +52,19 @@ for command in xvfb-run xfwm4 xfsettingsd dbus-run-session desktop-file-validate
   fi
 done
 test_profile=$(mktemp -d /tmp/abide-desktop-test.XXXXXX)
-trap 'rm -rf "$test_profile"' EXIT
+cleanup() {
+  # Portal mounts can outlive the exiting session bus by a few moments.
+  cleanup_attempts=0
+  until rm -rf -- "$test_profile" 2>/dev/null; do
+    cleanup_attempts=$((cleanup_attempts + 1))
+    if [ "$cleanup_attempts" -ge 50 ]; then
+      rm -rf -- "$test_profile"
+      return
+    fi
+    sleep 0.1
+  done
+}
+trap cleanup EXIT
 mkdir -p "$test_profile/Father Desktop/run"
 chmod 700 "$test_profile/Father Desktop/run"
 unset DBUS_SESSION_BUS_ADDRESS SESSION_MANAGER XAUTHORITY DESKTOP_STARTUP_ID XDG_ACTIVATION_TOKEN

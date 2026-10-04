@@ -272,6 +272,28 @@ class PanelTests(unittest.TestCase):
         self.pump(0.05)
         self.assertEqual(self.app.get_windows(), [])
 
+    def test_menu_sizes_to_visible_actions(self):
+        main = self.window.get_size()
+        self.assertLess(main.width, 350)
+        for route in ("Session", "Settings", "Capture", "Abide"):
+            with self.subTest(route=route):
+                self.app.change_menu_route(route)
+                self.pump(0.1)
+                last = self.app.menu_list.get_children()[-1].get_allocation()
+                blank = self.app.menu_list.get_allocated_height() - last.y - last.height
+                self.assertLessEqual(blank, 2, "Unused space below the last menu row")
+                height = self.window.get_size().height
+                if route == "Session":
+                    self.assertLess(height, main.height)
+                elif route == "Settings":
+                    self.assertGreater(height, main.height)
+                elif route == "Abide":
+                    self.assertEqual(height, main.height)
+        self.app.menu_search.set_text("simplescreenrecorder")
+        self.pump(0.1)
+        self.assertEqual([row.get_tooltip_text() for row in self.app.menu_list.get_children()], ["Record screen"])
+        self.assertLess(self.window.get_size().height, main.height)
+
     def search(self, text):
         self.app.shortcut_search.set_text(text)
         self.pump(0.05)

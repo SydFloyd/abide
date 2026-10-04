@@ -1,5 +1,6 @@
 .abide-guide { background-color: #151514; color: #d8d8d2; border: none; box-shadow: none; }
 .abide-guide decoration { border: none; box-shadow: none; }
+.abide-guide.abide-menu { font-size: 16pt; }
 .abide-guide.abide-shortcuts { font-size: 14pt; }
 .abide-guide .abide-heading {
   font-family: "DejaVu Sans Mono";
@@ -8,8 +9,18 @@
 }
 .abide-guide .abide-muted { color: #aaa99f; }
 .abide-guide .abide-error { color: #dfa59b; }
-.abide-guide .abide-search { min-height: 30px; padding: 7px 12px; }
+.abide-guide .abide-search {
+  min-height: 30px;
+  padding: 7px 12px;
+  background-color: #1d1d1a;
+  background-image: none;
+  color: #d8d8d2;
+  caret-color: #d8d8d2;
+  border-color: #34352d;
+  box-shadow: none;
+}
 .abide-guide list { background-color: #151514; border: none; }
+.abide-guide list label, .abide-guide list image { color: #d8d8d2; }
 .abide-guide scrolledwindow { border: none; box-shadow: none; }
 .abide-guide .abide-menu-row { min-height: 40px; border: none; }
 .abide-guide .abide-menu-row:selected { background-color: #34352d; }

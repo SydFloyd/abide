@@ -45,7 +45,7 @@ MENUS = {
         ("Screenshot", "camera-photo-symbolic", ["xfce4-screenshooter"]),
         ("Screenshot area", "edit-select-all-symbolic", ["xfce4-screenshooter", "-r"]),
         ("Screenshot window", "window-symbolic", ["xfce4-screenshooter", "-w"]),
-        ("Screen recording (SimpleScreenRecorder)", "media-record-symbolic", ["simplescreenrecorder"]),
+        ("Record screen", "media-record-symbolic", ["simplescreenrecorder"]),
     ],
     "Session": [
         ("Lock", "system-lock-screen-symbolic", ["xflock4"]),
@@ -172,7 +172,7 @@ class Panel:
         window.set_skip_pager_hint(True)
         window.set_type_hint(Gdk.WindowTypeHint.DIALOG)
         window.set_position(Gtk.WindowPosition.CENTER)
-        window.set_default_size(*{"menu": (520, 450), "shortcuts": (820, 600),
+        window.set_default_size(*{"menu": (-1, -1), "shortcuts": (820, 600),
                                   "journal": (700, 460)}[self.panel])
         window.connect("key-press-event", self.on_key)
         window.connect("delete-event", self.on_close)
@@ -180,7 +180,7 @@ class Panel:
         self.focus_seen = False
         window.connect("notify::is-active", self.on_active)
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        body.set_border_width(18)
+        body.set_border_width(12 if self.panel == "menu" else 18)
         window.add(body)
         css = SOURCE / "app.css"
         if css.exists() and not getattr(self.application, "abide_css", None):
@@ -281,6 +281,8 @@ class Panel:
         self.menu_route = "Abide"
         self.menu_selections = {}
         self.menu_search = Gtk.SearchEntry()
+        self.menu_search.set_width_chars(8)
+        self.menu_search.set_max_width_chars(8)
         self.menu_search.get_style_context().add_class("abide-search")
         self.menu_search.connect("changed", self.refresh_menu)
         page.pack_start(self.menu_search, False, False, 0)
@@ -289,8 +291,14 @@ class Panel:
         self.menu_list.set_activate_on_single_click(True)
         self.menu_list.connect("row-activated", self.activate_menu_row)
         scroll = Gtk.ScrolledWindow()
+        self.menu_scroll = scroll
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scroll.set_shadow_type(Gtk.ShadowType.NONE)
+        scroll.set_propagate_natural_width(True)
+        scroll.set_propagate_natural_height(True)
+        monitor = Gdk.Display.get_default().get_primary_monitor()
+        height = monitor.get_workarea().height if monitor else 800
+        scroll.set_max_content_height(max(160, height - 150))
         scroll.add(self.menu_list)
         page.pack_start(scroll, True, True, 0)
         self.menu_empty = label("No matching actions.", "abide-muted")
@@ -309,14 +317,17 @@ class Panel:
             items += [item for route, entries in MENUS.items() if route != "Abide" for item in entries]
         elif self.menu_route != "Abide" and not query:
             items.insert(0, ("Back", "go-previous-symbolic", "Abide"))
-        matches = [item for item in items if all(word in item[0].casefold() for word in query)]
+        def searchable(item):
+            title, _icon, action = item
+            return (title + " " + " ".join(action if isinstance(action, list) else [])).casefold()
+        matches = [item for item in items if all(word in searchable(item) for word in query)]
         for title, icon, action in matches:
             row = Gtk.ListBoxRow()
             row.action = action
             row.set_tooltip_text(title)
             row.get_style_context().add_class("abide-menu-row")
             content = Gtk.Box(spacing=12)
-            content.set_border_width(12)
+            content.set_border_width(8)
             content.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.BUTTON), False, False, 0)
             content.pack_start(label(title), True, True, 0)
             if isinstance(action, str):

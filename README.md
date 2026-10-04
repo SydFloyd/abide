@@ -21,7 +21,9 @@ those edits. Written in Python 3 with GTK 3 / PyGObject, using Debian's packages
 | Esc | Close the current panel |
 | Ctrl + F | Focus search in the shortcuts panel |
 
-The menu has a search field and keyboard navigation: Up/Down selects a row,
+The menu fits its visible rows and uses larger text; longer submenus expand as
+needed, and results scroll when they exceed the screen. It has a search field
+and keyboard navigation: Up/Down selects a row,
 Enter opens it, and Esc returns from a submenu or closes the menu. Search from
 the main menu also finds actions inside Settings, Capture, and Session. Apps
 opens Xfce's application finder; Abide has no individual app launcher buttons.
