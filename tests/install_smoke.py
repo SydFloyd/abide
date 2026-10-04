@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -35,6 +36,10 @@ def main():
     voice = root / "launchers.json"
     voice.write_text(json.dumps([["Voice test", "Hold Super + V", "audio", ["voice-test"]]]))
     voice_bytes = voice.read_bytes()
+    profile = root / "webapps/gmail/Default"
+    profile.mkdir(parents=True)
+    cookies = profile / "Cookies"
+    cookies.write_text("PRIVATE_WEBAPP_SESSION")
     run("xfconf-query", "-c", "xfce4-keyboard-shortcuts", "-p", "/commands/custom/<Super>v",
         "-n", "-t", "string", "-s", "voice-test-command")
     with tempfile.TemporaryDirectory(prefix="abide-smoke-upstream-") as folder:
@@ -53,6 +58,8 @@ def main():
         first_backup = (state / "latest-panels-install").read_text()
         assert "ready" in run(str(bin_dir / "abide"), "--doctor")
         assert "Usage:" in run(str(bin_dir / "abide"), "--help")
+        assert shlex.split(run("xfconf-query", "-c", "xfce4-keyboard-shortcuts", "-p", "/commands/custom/<Shift><Super>x")) == [str(bin_dir / "abide-webapp"), "x"]
+        assert shlex.split(run("xfconf-query", "-c", "xfce4-keyboard-shortcuts", "-p", "/commands/custom/<Shift><Super>e")) == [str(bin_dir / "abide-webapp"), "gmail"]
         for desktop in (home / ".local/share/applications").glob("abide*.desktop"):
             run("desktop-file-validate", str(desktop))
         for desktop in (home / ".config/autostart").glob("abide*.desktop"):
@@ -158,6 +165,7 @@ def main():
         assert updater.check()["state"] == "current"
         assert voice.read_bytes() == voice_bytes
         assert entry.read_text() == "PRIVATE_SMOKE_TEST_ENTRY"
+        assert cookies.read_text() == "PRIVATE_WEBAPP_SESSION"
         assert run("xfconf-query", "-c", "xfce4-keyboard-shortcuts", "-p", "/commands/custom/<Super>v") == "voice-test-command"
         print("Real main update: validation, installation, voice shortcuts, and journal preservation passed.")
         run(str(bin_dir / "abide-panels-undo"))
@@ -169,6 +177,7 @@ def main():
         assert not (bin_dir / "abide").exists()
         assert voice.read_bytes() == voice_bytes
         assert entry.read_text() == "PRIVATE_SMOKE_TEST_ENTRY"
+        assert cookies.read_text() == "PRIVATE_WEBAPP_SESSION"
         print("Update undo and initial install undo passed; private integrations remain intact.")
 
 

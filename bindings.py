@@ -1,4 +1,5 @@
 """The shortcuts Abide installs and describes, shared by setup and the UI."""
+from webapps import WEB_APPS
 
 # Each entry is (description, display text, Xfce accelerators, command).
 # Paths to Abide itself are filled in by command_bindings().
@@ -18,6 +19,8 @@ APPLICATIONS = [
     ("Select a screenshot area", "Shift + Print", ("<Shift>Print",), ("xfce4-screenshooter", "-r")),
     ("Screenshot this window", "Alt + Print", ("<Alt>Print",), ("xfce4-screenshooter", "-w")),
 ]
+APPLICATIONS += [(app.name, app.shortcut, (app.accelerator,), ("abide-webapp", app.identifier))
+                 for app in WEB_APPS]
 WINDOWS = [
     ("Close window", "Super + W", "<Super>w", "close_window_key"),
     ("Fullscreen", "Super + F", "<Super>f", "fullscreen_key"),
@@ -41,7 +44,7 @@ def command_bindings(bin_directory):
     result = {key: None for key in REMOVED_COMMANDS}
     for _title, _label, keys, arguments in APPLICATIONS:
         command = list(arguments)
-        if command[0] == "abide-guide":
+        if command[0] in ("abide-guide", "abide-webapp"):
             command[0] = str(bin_directory / command[0])
         for key in keys:
             result[key] = shlex.join(command)

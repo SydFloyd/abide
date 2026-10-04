@@ -50,6 +50,8 @@ class ConfigurationTests(unittest.TestCase):
         self.assertNotIn("<Super>v", commands)
         self.assertNotIn("<Alt><Super>v", commands)
         self.assertNotIn("<Primary><Super>v", commands)
+        self.assertEqual(commands["<Shift><Super>x"].split()[-1], "x")
+        self.assertEqual(commands["<Shift><Super>e"].split()[-1], "gmail")
 
 
 class MaintenanceTests(unittest.TestCase):

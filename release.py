@@ -8,7 +8,7 @@ import subprocess
 
 REPOSITORY = "https://github.com/SydFloyd/abide.git"
 CODE_FILES = ("app.py", "app.css", "focus.py", "install.py", "launcher.sh",
-              "bindings.py", "config.py", "release.py", "updater.py")
+              "bindings.py", "config.py", "release.py", "updater.py", "webapps.py")
 
 
 def file_hashes(source):

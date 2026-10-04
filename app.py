@@ -9,6 +9,7 @@ import time
 
 from bindings import shortcut_rows
 from config import load_launchers
+from webapps import WEB_APPS
 
 import gi
 gi.require_version("Gtk", "3.0")
@@ -315,12 +316,15 @@ class Panel:
         items = list(MENUS[self.menu_route])
         if query and self.menu_route == "Abide":
             items += [item for route, entries in MENUS.items() if route != "Abide" for item in entries]
+            items += [(app.name, app.icon, app.command(Path.home() / ".local/bin")) for app in WEB_APPS]
         elif self.menu_route != "Abide" and not query:
             items.insert(0, ("Back", "go-previous-symbolic", "Abide"))
         def searchable(item):
             title, _icon, action = item
             return (title + " " + " ".join(action if isinstance(action, list) else [])).casefold()
         matches = [item for item in items if all(word in searchable(item) for word in query)]
+        if query:
+            matches.sort(key=lambda item: item[0].casefold() != " ".join(query))
         for title, icon, action in matches:
             row = Gtk.ListBoxRow()
             row.action = action

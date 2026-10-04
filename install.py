@@ -12,6 +12,7 @@ import time
 
 from bindings import WINDOWS, command_bindings
 from release import CODE_FILES, maintenance_lock, manifest, verify_installation
+from webapps import WEB_APPS, desktop_entry
 
 HOME = Path.home()
 SOURCE = Path(__file__).resolve().parent
@@ -65,6 +66,7 @@ def targets():
         ("abide-panels", "app.py", "sys.argv = [sys.argv[0], '--service']\n"),
         ("abide-focus", "focus.py", ""),
         ("abide-update", "updater.py", ""),
+        ("abide-webapp", "webapps.py", ""),
         ("abide-doctor", "install.py", "sys.argv = [sys.argv[0], '--check']\n"),
         ("abide-panels-undo", "install.py", "sys.argv = [sys.argv[0], '--undo']\n"),
     ]:
@@ -77,6 +79,8 @@ def targets():
         ("abide-shortcuts", "Abide Shortcuts", " --shortcuts"),
     ]:
         files[applications / (name + ".desktop")] = desktop(title, option).encode()
+    for app in WEB_APPS:
+        files[applications / ("abide-webapp-" + app.identifier + ".desktop")] = desktop_entry(app, BIN).encode()
     focus_executable = str(BIN / "abide-focus").replace("\\", "\\\\").replace('"', '\\"')
     files[HOME / ".config/autostart/abide-focus.desktop"] = (
         "[Desktop Entry]\nType=Application\nName=Abide window focus\n"
