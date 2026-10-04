@@ -41,7 +41,8 @@ class InstallationTests(unittest.TestCase):
             data = home / ".local/share/abide"
             (data / "journal").mkdir(parents=True)
             secret = "PRIVATE_VERIFICATION_ENTRY"
-            for name in ("journal/2026-01-01.txt", "launchers.json", "scripture.json"):
+            (data / "webapps/gmail").mkdir(parents=True)
+            for name in ("journal/2026-01-01.txt", "launchers.json", "scripture.json", "webapps/gmail/Cookies"):
                 (data / name).write_text(secret)
             with patch.object(installer, "HOME", home), patch.object(installer, "ROOT", data), \
                     patch.object(installer, "BIN", home / ".local/bin"):
@@ -49,6 +50,7 @@ class InstallationTests(unittest.TestCase):
             self.assertNotIn(data / "scripture.json", files)
             self.assertNotIn(data / "launchers.json", files)
             self.assertFalse(any("journal" in path.parts for path in files))
+            self.assertFalse(any("webapps" in path.parts for path in files))
             self.assertFalse(any(secret.encode() in contents for contents in files.values()))
             self.assertEqual((data / "journal/2026-01-01.txt").read_text(), secret)
             self.assertIn(home / ".local/bin/abide-focus", files)
@@ -271,6 +273,19 @@ class PanelTests(unittest.TestCase):
         self.menu_key(self.ui.Gdk.KEY_Escape)
         self.pump(0.05)
         self.assertEqual(self.app.get_windows(), [])
+
+    def test_search_finds_webapps_without_adding_home_menu_buttons(self):
+        titles = [row.get_tooltip_text() for row in self.app.menu_list.get_children()]
+        self.assertNotIn("X", titles)
+        self.assertNotIn("Gmail", titles)
+        for app in self.ui.WEB_APPS:
+            with self.subTest(app=app.identifier):
+                self.app.menu_search.set_text(app.name)
+                first = self.app.menu_list.get_row_at_index(0)
+                self.assertEqual(first.get_tooltip_text(), app.name)
+                with patch.object(self.app, "launch") as launch:
+                    self.menu_key(self.ui.Gdk.KEY_Return)
+                    launch.assert_called_once_with(first, app.command(Path.home() / ".local/bin"))
 
     def test_menu_sizes_to_visible_actions(self):
         main = self.window.get_size()

@@ -14,6 +14,8 @@ those edits. Written in Python 3 with GTK 3 / PyGObject, using Debian's packages
 | Super + Return | New preferred terminal |
 | Super + Shift + Return | Browser (Super + B also works) |
 | Super + Shift + F | Files (Super + E also works) |
+| Super + Shift + X | X web app |
+| Super + Shift + E | Gmail web app |
 | Super + Ctrl + T | System monitor |
 | Super + Ctrl + L | Lock (Super + L also works) |
 | Super + F | Fullscreen |
@@ -85,6 +87,19 @@ Super+Q, and the old standalone Super listener are retired.
 Screen recording is optional. Install it with `sudo apt install simplescreenrecorder`;
 the Capture menu already includes it. Missing optional applications show a
 message while leaving the menu usable.
+
+X and Gmail can run in their own Chromium app windows, without tabs or an
+address bar. Use `./setup.sh --webapps` to include Chromium, or install it later
+with `sudo apt install chromium chromium-sandbox`. Firefox remains your normal
+browser. Find X and Gmail under Apps or search for them in Abide; Super+Shift+X
+opens X and Super+Shift+E opens Gmail, following Omarchy's X/email bindings.
+Repeating a shortcut focuses the existing app window, including on another
+workspace, rather than opening another copy. Super+W closes it normally.
+
+Run `abide-webapp x` or `abide-webapp gmail` from a terminal. Each app has its own
+private, persistent browser profile under `~/.local/share/abide/webapps`; sign in
+once in each app. Abide's updates and undo preserve these profiles. Web apps are
+ordinary desktop windows, so they stay open when you switch to another window.
 
 Run `abide`, `abide --journal`, or `abide --shortcuts` directly. `--reflect` is
 also accepted for existing launchers. Close any already-running old Abide window

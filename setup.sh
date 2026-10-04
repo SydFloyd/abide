@@ -19,6 +19,10 @@ case ":$(printf '%s' "${XDG_CURRENT_DESKTOP:-}" | tr '[:upper:]' '[:lower:]'):" 
 esac
 setup_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 packages='python3 python3-gi gir1.2-gtk-3.0 gir1.2-wnck-3.0 libglib2.0-bin xfconf exo-utils xfce4-terminal xfce4-settings xfce4-session xfce4-appfinder xfce4-taskmanager xfce4-screenshooter thunar mousepad git'
+if [ "${1:-}" = --webapps ]; then
+  packages="$packages chromium chromium-sandbox"
+  shift
+fi
 missing=''
 for package in $packages; do
   if [ "$(dpkg-query -W -f='${db:Status-Status}' "$package" 2>/dev/null || true)" != installed ]; then
