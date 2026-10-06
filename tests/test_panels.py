@@ -276,6 +276,36 @@ class PanelTests(unittest.TestCase):
         self.pump(0.05)
         self.assertEqual(self.app.get_windows(), [])
 
+    def test_window_mode_toggle_shows_current_mode_and_supports_keyboard_and_search(self):
+        def widgets(parent):
+            yield parent
+            if isinstance(parent, self.ui.Gtk.Container):
+                for child in parent.get_children():
+                    yield from widgets(child)
+        for tiled in (False, True):
+            with self.subTest(tiled=tiled), patch.object(self.ui, "tiling_enabled", return_value=tiled), \
+                    patch.object(self.ui, "command_available", return_value=True), \
+                    patch.object(self.app, "launch") as launch:
+                self.app.change_menu_route("Windows")
+                rows = self.app.menu_list.get_children()
+                self.assertEqual([row.get_tooltip_text() for row in rows], ["Back", "Window mode"])
+                switch, = [widget for widget in widgets(rows[1]) if isinstance(widget, self.ui.Gtk.Switch)]
+                self.assertEqual(switch.get_active(), tiled)
+                self.assertEqual(switch.get_state(), tiled)
+                texts = [widget.get_text() for widget in widgets(rows[1]) if isinstance(widget, self.ui.Gtk.Label)]
+                self.assertIn("Floating", texts)
+                self.assertIn("Tiled", texts)
+                switch.set_active(not tiled)
+                launch.assert_called_once_with(rows[1], rows[1].action)
+                launch.reset_mock()
+                self.app.menu_list.select_row(rows[1])
+                self.menu_key(self.ui.Gdk.KEY_Return)
+                launch.assert_called_once_with(rows[1], rows[1].action)
+                self.app.change_menu_route("Abide")
+                for query in ("floating", "tiled", "tiling"):
+                    self.app.menu_search.set_text(query)
+                    self.assertEqual([row.get_tooltip_text() for row in self.app.menu_list.get_children()], ["Window mode"])
+
     def test_menu_hides_missing_capture_and_webapp_actions(self):
         original = self.ui.command_available
         def available(command):

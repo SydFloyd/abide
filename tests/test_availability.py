@@ -39,6 +39,17 @@ class AvailabilityTests(unittest.TestCase):
             self.assertIsNotNone(keys["<Super>space"])
             self.assertFalse(availability.command_available(["abide-wm", "--enable"]))
 
+    def test_window_toggle_requires_tiling_tools_only_when_switching_to_tiled(self):
+        tools = {"xfwm4"}
+        with patch.object(availability, "executable", side_effect=lambda name: name if name in tools else None), \
+                patch("window_manager.enabled", return_value=False):
+            self.assertFalse(availability.command_available(["abide-wm", "--toggle"]))
+            tools.update(("bspwm", "bspc", "xprop"))
+            self.assertTrue(availability.command_available(["abide-wm", "--toggle"]))
+        with patch.object(availability, "executable", side_effect=lambda name: name if name == "xfwm4" else None), \
+                patch("window_manager.enabled", return_value=True):
+            self.assertTrue(availability.command_available(["abide-wm", "--toggle"]))
+
     def test_selected_helper_must_be_installed_even_if_another_browser_exists(self):
         config = self.home / "config/xfce4"
         config.mkdir(parents=True)

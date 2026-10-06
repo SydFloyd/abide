@@ -2,6 +2,7 @@
 from pathlib import Path
 import shlex
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -11,6 +12,17 @@ import window_manager as wm
 
 
 class WindowManagerTests(unittest.TestCase):
+    def test_toggle_switches_modes_in_both_directions(self):
+        for tiled in (False, True):
+            with self.subTest(tiled=tiled), patch.object(sys, "argv", ["abide-wm", "--toggle"]), \
+                    patch.object(wm, "enabled", return_value=tiled), \
+                    patch.object(wm, "enable") as enable, patch.object(wm, "disable") as disable, \
+                    patch.object(wm, "maintenance_lock") as lock:
+                self.assertEqual(wm.main(), 0)
+                lock.assert_called_once_with(wm.STATE)
+                (disable if tiled else enable).assert_called_once_with()
+                (enable if tiled else disable).assert_not_called()
+
     def test_shortcuts_find_user_local_binaries_without_a_shell_path(self):
         with tempfile.TemporaryDirectory() as folder:
             binary = Path(folder) / "bspc"

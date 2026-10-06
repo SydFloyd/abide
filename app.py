@@ -50,8 +50,7 @@ MENUS = {
         ("Check for updates", "software-update-available-symbolic", [str(Path.home() / ".local/bin/abide-update"), "--gui"]),
     ],
     "Windows": [
-        ("Enable automatic tiling", "view-grid-symbolic", [str(Path.home() / ".local/bin/abide-wm"), "--enable", "--gui"]),
-        ("Restore floating windows", "window-symbolic", [str(Path.home() / ".local/bin/abide-wm"), "--disable", "--gui"]),
+        ("Window mode", "preferences-system-windows-symbolic", [str(Path.home() / ".local/bin/abide-wm"), "--toggle", "--gui"]),
     ],
     "Capture": [
         ("Screenshot", "camera-photo-symbolic", ["xfce4-screenshooter"]),
@@ -368,7 +367,8 @@ class Panel:
             items.insert(0, ("Back", "go-previous-symbolic", "Abide"))
         def searchable(item):
             title, _icon, action = item
-            aliases = " software packages components install" if title == "Add-ins" else ""
+            aliases = {"Add-ins": " software packages components install",
+                       "Window mode": " float floating tile tiled tiling toggle windows"}.get(title, "")
             return (title + aliases + " " + " ".join(action if isinstance(action, list) else [])).casefold()
         matches = [item for item in items if all(word in searchable(item) for word in query)]
         if query:
@@ -384,6 +384,18 @@ class Panel:
             content.pack_start(label(title), True, True, 0)
             if isinstance(action, str):
                 content.pack_end(label("›", "abide-muted"), False, False, 0)
+            elif Path(action[0]).name == "abide-wm" and "--toggle" in action:
+                modes = Gtk.Box(spacing=8)
+                modes.pack_start(label("Floating", "abide-muted"), False, False, 0)
+                switch = Gtk.Switch()
+                switch.set_valign(Gtk.Align.CENTER)
+                switch.set_active(tiling_enabled())
+                switch.get_accessible().set_name("Tiled windows")
+                switch.get_accessible().set_description("Off: floating windows. On: tiled windows.")
+                switch.connect("state-set", self.toggle_window_mode, row)
+                modes.pack_start(switch, False, False, 0)
+                modes.pack_start(label("Tiled", "abide-muted"), False, False, 0)
+                content.pack_end(modes, False, False, 0)
             elif title == "Update":
                 dot = label("●", "abide-update-dot")
                 dot.get_accessible().set_name("Update available")
@@ -396,6 +408,11 @@ class Panel:
         selected = next((row for row in self.menu_list.get_children()
                          if row.get_tooltip_text() == remembered), self.menu_list.get_row_at_index(0))
         self.menu_list.select_row(selected)
+
+    def toggle_window_mode(self, _switch, _state, row):
+        self.launch(row, row.action)
+        # The backend owns the state; reread it when the menu opens again.
+        return True
 
     def change_menu_route(self, route, selected=None):
         selected = selected or self.menu_list.get_selected_row()

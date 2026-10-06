@@ -145,7 +145,10 @@ switch, and workspace names and voice bindings are preserved.
 
 Super+J still opens Journal and Super+K still opens Shortcuts. Shortcuts shows
 the controls for the current mode. Switch modes from **Super+Space → Settings →
-Windows**, or run `abide-wm --enable` / `abide-wm --disable`. Tiling starts at
+Windows** using the **Floating / Tiled** toggle, or run `abide-wm --toggle`.
+The switch shows the current mode; turning it on selects tiled windows and
+turning it off selects floating windows. `abide-wm --enable` / `abide-wm --disable`
+still select a mode explicitly. Tiling starts at
 future Xfce logins. Disabling it restores xfwm4, the previous keyboard bindings,
 panel tabs, and session command. The installation's undo also restores the
 previous window-management mode; a failed first switch restores the desktop.

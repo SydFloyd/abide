@@ -73,7 +73,9 @@ def command_available(arguments):
     if name == "abide-webapp":
         return bool(executable("chromium") or executable("chromium-browser"))
     if name == "abide-wm":
-        dependencies = ("bspwm", "bspc", "xfwm4", "xprop") if "--enable" in arguments else ("xfwm4",)
+        from window_manager import enabled
+        tiling = "--enable" in arguments or ("--toggle" in arguments and not enabled())
+        dependencies = ("bspwm", "bspc", "xfwm4", "xprop") if tiling else ("xfwm4",)
         return all(executable(command) for command in dependencies)
     if not executable(arguments[0]):
         return False

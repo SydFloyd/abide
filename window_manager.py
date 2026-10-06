@@ -337,7 +337,7 @@ def action(name, argument=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
-    for name in ("enable", "disable", "status", "configure", "session", "autostart"):
+    for name in ("enable", "disable", "toggle", "status", "configure", "session", "autostart"):
         mode.add_argument("--" + name, action="store_true")
     parser.add_argument("--gui", action="store_true", help="show errors in a desktop dialog")
     parser.add_argument("action", nargs="?")
@@ -358,7 +358,9 @@ def main():
         return 0
     else:
         with maintenance_lock(STATE):
-            if args.disable:
+            if args.toggle:
+                (disable if enabled() else enable)()
+            elif args.disable:
                 disable()
             elif args.enable or args.autostart:
                 enable()
